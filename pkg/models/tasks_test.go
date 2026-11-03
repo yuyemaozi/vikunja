@@ -275,6 +275,13 @@ func TestTask_Update(t *testing.T) {
 
 		err = task.Update(s, u)
 		require.ErrorIs(t, err, ErrGenericForbidden{})
+		require.NoError(t, s.Commit())
+
+		db.AssertExists(t, "tasks", map[string]interface{}{
+			"id":         1,
+			"title":      "task #1",
+			"project_id": 2,
+		}, false)
 	})
 	t.Run("hex color with leading #", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
