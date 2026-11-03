@@ -299,8 +299,22 @@ func TestAuthenticateCallbackLinkedIdentity(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		idp := newMockIDP(t)
 		idp.configure(t)
-		// user 10 has TOTP enabled in pkg/db/fixtures/totp.yml.
-		linkIdentity(t, 10, idp.URL, "linked-sub")
+		// Own user and secret: the fixture TOTP of user 10 would mark its current
+		// passcode as used for the other TOTP tests in this package.
+		const secret = "KRSXG5CTMVRXEZLU"
+		s := db.NewSession()
+		_, err := s.Insert(&user.TOTP{
+			UserID:  2,
+			Secret:  secret,
+			Enabled: true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, s.Commit())
+		s.Close()
+		t.Cleanup(func() {
+			_ = keyvalue.Del((&user.User{ID: 2}).GetFailedTOTPAttemptsKey())
+		})
+		linkIdentity(t, 2, idp.URL, "linked-sub")
 		idp.setClaims(map[string]any{
 			"sub":                "linked-sub",
 			"email":              "idp-email@example.com",
@@ -308,18 +322,18 @@ func TestAuthenticateCallbackLinkedIdentity(t *testing.T) {
 			"preferred_username": "idpUsername",
 		})
 
-		_, _, err := AuthenticateCallback(t.Context(), &Callback{Code: "code"}, mockIDPProviderKey)
+		_, _, err = AuthenticateCallback(t.Context(), &Callback{Code: "code"}, mockIDPProviderKey)
 		require.Error(t, err)
 		assert.True(t, user.IsErrInvalidTOTPPasscode(err), "unexpected error %v", err)
 
-		passcode, err := totp.GenerateCode("JBSWY3DPEHPK3PXP", time.Now())
+		passcode, err := totp.GenerateCode(secret, time.Now())
 		require.NoError(t, err)
 		u, _, err := AuthenticateCallback(t.Context(), &Callback{
 			Code:         "code",
 			TOTPPasscode: passcode,
 		}, mockIDPProviderKey)
 		require.NoError(t, err)
-		assert.Equal(t, int64(10), u.ID)
+		assert.Equal(t, int64(2), u.ID)
 	})
 }
 
