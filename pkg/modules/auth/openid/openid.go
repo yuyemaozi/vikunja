@@ -277,7 +277,7 @@ func AuthenticateCallback(ctx context.Context, cb *Callback, providerKey string)
 	defer events.CleanupPending(s)
 
 	// Check if we have seen this user before
-	u, _, err := getOrCreateUser(s, cl, provider, idToken)
+	u, linked, err := getOrCreateUser(s, cl, provider, idToken)
 	if err != nil {
 		_ = s.Rollback()
 		log.Errorf("Error creating new user for provider %s: %v", provider.Name, err)
@@ -328,7 +328,8 @@ func AuthenticateCallback(ctx context.Context, cb *Callback, providerKey string)
 
 	events.DispatchPending(ctx, s)
 
-	if cl.Picture != "" {
+	// A linked user keeps the avatar they chose locally.
+	if cl.Picture != "" && !linked {
 		syncUserAvatarFromOpenID(ctx, u.ID, cl.Picture)
 	}
 
@@ -467,6 +468,20 @@ func fallbackSearchUsers(cl *claims, provider *Provider, idToken *oidc.IDToken) 
 	return searches
 }
 
+// getLinkedUser resolves an identity linked from the settings. A disabled or
+// locked user is returned without error so the caller refuses the login.
+func getLinkedUser(s *xorm.Session, idToken *oidc.IDToken) (*user.User, bool, error) {
+	identity, found, err := models.GetUserIdentityByIssuerAndSubject(s, idToken.Issuer, idToken.Subject)
+	if err != nil || !found {
+		return nil, false, err
+	}
+	u, err := user.GetUserWithEmail(s, &user.User{ID: identity.UserID})
+	if err != nil && !user.IsErrUserStatusError(err) {
+		return nil, false, err
+	}
+	return u, true, nil
+}
+
 func getOrCreateUser(s *xorm.Session, cl *claims, provider *Provider, idToken *oidc.IDToken) (u *user.User, linked bool, err error) {
 
 	// set defaults
@@ -488,6 +503,14 @@ func getOrCreateUser(s *xorm.Session, cl *claims, provider *Provider, idToken *o
 	// HandleCallback will reject the auth attempt.
 	if alreadyCreatedFromIssuer && user.IsErrUserStatusError(err) {
 		return u, false, nil
+	}
+
+	// Linked users keep their local profile, so none of the syncing below applies.
+	if !alreadyCreatedFromIssuer {
+		u, linked, err = getLinkedUser(s, idToken)
+		if err != nil || linked {
+			return u, linked, err
+		}
 	}
 
 	if !alreadyCreatedFromIssuer && (provider.EmailFallback || provider.UsernameFallback) {
