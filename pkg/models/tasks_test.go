@@ -259,6 +259,23 @@ func TestTask_Update(t *testing.T) {
 			"project_id":  1,
 		}, false)
 	})
+	t.Run("task moved to a forbidden project after the permission check", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		task := &Task{ID: 1, Title: "test10000"}
+		can, err := task.CanUpdate(s, u)
+		require.NoError(t, err)
+		require.True(t, can)
+
+		// Project 2 belongs to user 3 and is not shared with user 1.
+		_, err = s.ID(1).Cols("project_id", "index").Update(&Task{ProjectID: 2, Index: 9999})
+		require.NoError(t, err)
+
+		err = task.Update(s, u)
+		require.ErrorIs(t, err, ErrGenericForbidden{})
+	})
 	t.Run("hex color with leading #", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()

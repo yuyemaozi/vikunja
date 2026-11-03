@@ -83,5 +83,9 @@ func (t *Task) canDoTask(s *xorm.Session, a web.Auth) (bool, error) {
 
 	// A user can do a task if it has write acces to its project
 	l := &Project{ID: ot.ProjectID}
-	return l.CanWrite(s, a)
+	can, err := l.CanWrite(s, a)
+	if can && err == nil {
+		t.writeCheckedProjectID = ot.ProjectID
+	}
+	return can, err
 }
