@@ -181,6 +181,7 @@ func DeleteUser(s *xorm.Session, u *user.User) (err error) {
 		{"user_id", &Favorite{}},
 		{"owner_id", &APIToken{}},
 		{"created_by_id", &Webhook{}},
+		{"user_id", &UserIdentity{}},
 	}
 
 	for _, entity := range relatedEntities {
