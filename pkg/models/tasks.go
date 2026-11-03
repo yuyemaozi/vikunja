@@ -180,9 +180,6 @@ type Task struct {
 	CreatedBy   *user.User `xorm:"-" json:"created_by" valid:"-" readOnly:"true" doc:"The user who created this task. Set by the server."`
 	CreatedByID int64      `xorm:"bigint not null" json:"-"` // ID of the user who put that task on the project
 
-	// Set by canDoTask so the locked re-read in updateSingleTask can tell if the task moved since.
-	writeCheckedProjectID int64
-
 	web.CRUDable    `xorm:"-" json:"-"`
 	web.Permissions `xorm:"-" json:"-"`
 }
@@ -1302,14 +1299,12 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 		return
 	}
 
-	if ot.ProjectID != t.writeCheckedProjectID {
-		can, err := (&Project{ID: ot.ProjectID}).CanWrite(s, a)
-		if err != nil {
-			return err
-		}
-		if !can {
-			return ErrGenericForbidden{}
-		}
+	can, err := (&Project{ID: ot.ProjectID}).CanWrite(s, a)
+	if err != nil {
+		return err
+	}
+	if !can {
+		return ErrGenericForbidden{}
 	}
 
 	if t.ProjectID == 0 {
