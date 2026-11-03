@@ -467,6 +467,15 @@ func fallbackSearchUsers(cl *claims, provider *Provider, idToken *oidc.IDToken) 
 	return searches
 }
 
+func logFallbackDeprecation(provider *Provider, u *user.User) {
+	log.Warningf(
+		"OpenID provider %q matched local user %d via the deprecated emailfallback/usernamefallback option. "+
+			"Both options will be removed in a future release; the user must link the provider from their account settings before then.",
+		provider.Key,
+		u.ID,
+	)
+}
+
 func getOrCreateUser(s *xorm.Session, cl *claims, provider *Provider, idToken *oidc.IDToken) (u *user.User, err error) {
 
 	// set defaults
@@ -499,6 +508,9 @@ func getOrCreateUser(s *xorm.Session, cl *claims, provider *Provider, idToken *o
 				return nil, err
 			}
 			fallbackMatchFound = err == nil || user.IsErrUserStatusError(err)
+			if fallbackMatchFound {
+				logFallbackDeprecation(provider, u)
+			}
 
 			// Same as above: disabled/locked user found via fallback — return early.
 			if fallbackMatchFound && user.IsErrUserStatusError(err) {

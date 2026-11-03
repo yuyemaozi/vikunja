@@ -31,12 +31,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"code.vikunja.io/api/pkg/config"
+	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/modules/avatar"
 	"code.vikunja.io/api/pkg/modules/imageutils"
@@ -550,6 +553,96 @@ func TestGetOrCreateUser(t *testing.T) {
 
 		assert.NotEqual(t, 11, int(u.ID), "must not link to user 11 via an unverified email")
 		assert.Equal(t, "https://some.issuer", u.Issuer, "a new separate account should have been created")
+	})
+}
+
+func captureWarnings(t *testing.T) func() string {
+	dir := t.TempDir()
+	log.ConfigureStandardLogger(true, "file", dir, "WARNING", "text")
+	t.Cleanup(log.InitLogger)
+
+	return func() string {
+		content, err := os.ReadFile(filepath.Join(dir, "standard.log"))
+		require.NoError(t, err)
+		return string(content)
+	}
+}
+
+func TestFallbackLogsDeprecationWarning(t *testing.T) {
+	t.Run("username fallback match", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		logged := captureWarnings(t)
+
+		provider := &Provider{
+			Key:              "test",
+			UsernameFallback: true,
+		}
+		idToken := &oidc.IDToken{
+			Issuer:  "https://some.issuer",
+			Subject: "user11",
+		}
+
+		u, err := getOrCreateUser(s, &claims{}, provider, idToken)
+		require.NoError(t, err)
+		require.Equal(t, int64(11), u.ID)
+
+		out := logged()
+		assert.Contains(t, out, "level=WARN")
+		assert.Contains(t, out, `OpenID provider \"test\" matched local user 11 via the deprecated`)
+	})
+	t.Run("email fallback match", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		logged := captureWarnings(t)
+
+		cl := &claims{
+			Email:         "user11@example.com",
+			EmailVerified: true,
+		}
+		provider := &Provider{
+			Key:           "test",
+			EmailFallback: true,
+		}
+		idToken := &oidc.IDToken{
+			Issuer:  "https://some.issuer",
+			Subject: "unknown-subject",
+		}
+
+		u, err := getOrCreateUser(s, cl, provider, idToken)
+		require.NoError(t, err)
+		require.Equal(t, int64(11), u.ID)
+
+		assert.Contains(t, logged(), `OpenID provider \"test\" matched local user 11 via the deprecated`)
+	})
+	t.Run("no fallback match", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		logged := captureWarnings(t)
+
+		cl := &claims{
+			Email:             "nobody@example.com",
+			EmailVerified:     true,
+			PreferredUsername: "nobody",
+		}
+		provider := &Provider{
+			Key:              "test",
+			UsernameFallback: true,
+			EmailFallback:    true,
+		}
+		idToken := &oidc.IDToken{
+			Issuer:  "https://some.issuer",
+			Subject: "nobody-subject",
+		}
+
+		u, err := getOrCreateUser(s, cl, provider, idToken)
+		require.NoError(t, err)
+		require.Equal(t, "https://some.issuer", u.Issuer)
+
+		assert.NotContains(t, logged(), "deprecated")
 	})
 }
 
