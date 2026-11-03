@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"testing"
 
+	"code.vikunja.io/api/pkg/config"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,6 +29,8 @@ import (
 // Re-auth endpoints must not let a stolen session brute-force the password (GHSA-49pj-52x6-8gpj).
 func TestReauthThrottle(t *testing.T) {
 	const failureLimit = 10
+	config.AuthOpenIDEnabled.Set(true)
+	t.Cleanup(func() { config.AuthOpenIDEnabled.Set(false) })
 
 	for _, tc := range []struct {
 		name, method, path, wrong, right string
@@ -50,6 +54,8 @@ func TestReauthThrottle(t *testing.T) {
 		{"v2 password change", http.MethodPost, "/api/v2/user/password", `{"old_password":"wrong","new_password":"newpassword1"}`, `{"old_password":"12345678","new_password":"newpassword1"}`, true},
 		{"v1 email change", http.MethodPost, "/api/v1/user/settings/email", `{"new_email":"new@example.com","password":"wrong"}`, `{"new_email":"new@example.com","password":"12345678"}`, true},
 		{"v2 email change", http.MethodPut, "/api/v2/user/settings/email", `{"new_email":"new@example.com","password":"wrong"}`, `{"new_email":"new@example.com","password":"12345678"}`, true},
+		{"v2 identity link", http.MethodPost, "/api/v2/user/settings/identities", `{"provider":"p","code":"c","redirect_url":"https://localhost","password":"wrong"}`, `{"provider":"p","code":"c","redirect_url":"https://localhost","password":"12345678"}`, true},
+		{"v2 identity unlink", http.MethodPost, "/api/v2/user/settings/identities/1/unlink", `{"password":"wrong"}`, `{"password":"12345678"}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, err := setupTestEnv()

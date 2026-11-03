@@ -24,11 +24,11 @@ import (
 
 // Matched on Issuer, not the provider key, so key renames don't break links.
 type UserIdentity struct {
-	ID      int64     `xorm:"bigint autoincr not null unique pk" json:"id"`
+	ID      int64     `xorm:"bigint autoincr not null unique pk" json:"id" readOnly:"true" doc:"The unique, numeric id of this linked identity."`
 	UserID  int64     `xorm:"bigint not null unique(user_issuer)" json:"-"`
-	Issuer  string    `xorm:"varchar(250) not null unique(user_issuer) unique(issuer_subject)" json:"issuer"`
+	Issuer  string    `xorm:"varchar(250) not null unique(user_issuer) unique(issuer_subject)" json:"issuer" readOnly:"true" doc:"The issuer URL from the provider's ID token."`
 	Subject string    `xorm:"varchar(255) not null unique(issuer_subject)" json:"-"`
-	Created time.Time `xorm:"created not null" json:"created"`
+	Created time.Time `xorm:"created not null" json:"created" readOnly:"true" doc:"When the identity was linked."`
 }
 
 func (*UserIdentity) TableName() string {
