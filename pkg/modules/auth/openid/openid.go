@@ -533,14 +533,8 @@ func getOrCreateUser(s *xorm.Session, cl *claims, provider *Provider, idToken *o
 		}
 	} else if alreadyCreatedFromIssuer {
 
-		// try updating user.Name and/or user.Email if necessary
-		if cl.Email != u.Email {
-			u.Email = cl.Email
-		}
-		if cl.Name != u.Name {
-			u.Name = cl.Name
-		}
-
+		u.Email = cl.Email
+		u.Name = cl.Name
 		u.ExtraSettingsLinks = cl.ExtraSettingsLinks
 
 		u, err = user.UpdateUser(s, u, false)
