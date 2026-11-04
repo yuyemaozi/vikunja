@@ -98,11 +98,12 @@ func ClaimWebhookDelivery(
 		attempts = "1"
 	}
 
-	arguments := []any{token, until, id}
+	arguments := []any{token, until, now, id}
 	if mode != DeliveryModeRetry {
 		arguments = append(arguments, now, now)
 	}
 	statement := "UPDATE webhook_deliveries SET status = 'processing', lease_token = ?, lease_until = ?, " +
+		"attempt_count = attempt_count + 1, last_attempt_at = ?, " +
 		"cycle_attempt_count = " + attempts + ", retry_generation = " + generation + " " +
 		"WHERE delivery_id = ? AND (" + where + ")"
 	result, err := s.Exec(append([]any{statement}, arguments...)...)
@@ -153,9 +154,11 @@ func CompleteWebhookDelivery(
 ) (bool, error) {
 	status := ""
 	nextAttempt := any(nil)
+	var deliveredAt any
 	switch outcome.Kind {
 	case OutcomeDelivered:
 		status = WebhookDeliveryStatusDelivered
+		deliveredAt = now
 	case OutcomeCancelled:
 		status = WebhookDeliveryStatusCancelled
 	case OutcomeRetry:
@@ -169,10 +172,11 @@ func CompleteWebhookDelivery(
 
 	result, err := s.Exec(
 		"UPDATE webhook_deliveries SET status = ?, last_error_code = ?, lease_token = NULL, "+
-			"lease_until = NULL, next_attempt_at = ? "+
+			"lease_until = NULL, next_attempt_at = ?, last_attempt_at = ?, "+
+			"delivered_at = COALESCE(?, delivered_at) "+
 			"WHERE delivery_id = ? AND status = 'processing' AND lease_token = ? "+
 			"AND retry_generation = ? AND lease_until > ?",
-		status, outcome.ErrorCode, nextAttempt, id, lease.Token, lease.Generation, now,
+		status, outcome.ErrorCode, nextAttempt, now, deliveredAt, id, lease.Token, lease.Generation, now,
 	)
 	if err != nil {
 		return false, err

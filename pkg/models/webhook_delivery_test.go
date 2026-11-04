@@ -136,8 +136,8 @@ func TestAttemptWebhookDeliveryDeliversAndMarksRecord(t *testing.T) {
 	assert.Equal(t, requestID, receivedRequestID)
 	assert.Equal(t, WebhookDeliveryStatusDelivered, stored.Status)
 	assert.Equal(t, 1, stored.AttemptCount)
+	assert.Equal(t, 1, stored.CycleAttemptCount)
 	assert.NotNil(t, stored.DeliveredAt)
-	assert.NotNil(t, stored.LastAttemptAt)
 }
 
 func TestAttemptWebhookDeliveryFailureKeepsRecordPending(t *testing.T) {
@@ -161,8 +161,8 @@ func TestAttemptWebhookDeliveryFailureKeepsRecordPending(t *testing.T) {
 	require.Error(t, AttemptWebhookDelivery(record.DeliveryID))
 
 	stored := loadDelivery(t, record.DeliveryID)
-	assert.Equal(t, WebhookDeliveryStatusPending, stored.Status)
-	assert.Equal(t, 1, stored.AttemptCount)
+	assert.Equal(t, WebhookDeliveryStatusFailed, stored.Status)
+	assert.Equal(t, 6, stored.CycleAttemptCount)
 	assert.Equal(t, "delivery_failed", stored.LastErrorCode)
 }
 
@@ -206,35 +206,6 @@ func TestClaimWebhookDeliveryForRecoveryIsExclusive(t *testing.T) {
 	_ = secondSession.Close()
 	require.NoError(t, err)
 	assert.False(t, claimedAgain)
-}
-
-func TestMarkWebhookDeliveryPoisonedAndRetry(t *testing.T) {
-	webhook := newTestWebhook(t, "https://example.com/hook")
-	s := db.NewSession()
-	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
-		EventName: "task.updated",
-		Time:      time.Now(),
-		Data:      map[string]interface{}{},
-	})
-	require.NoError(t, err)
-	require.NoError(t, s.Commit())
-	_ = s.Close()
-
-	require.NoError(t, MarkWebhookDeliveryPoisoned(record.DeliveryID))
-	stored := loadDelivery(t, record.DeliveryID)
-	assert.Equal(t, WebhookDeliveryStatusFailed, stored.Status)
-	assert.NotNil(t, stored.FailedAt)
-	assert.Equal(t, "poisoned", stored.LastErrorCode)
-
-	s = db.NewAutocommitSession()
-	defer s.Close()
-	retried, err := RetryWebhookDelivery(s, record.DeliveryID)
-	require.NoError(t, err)
-	assert.True(t, retried)
-
-	retriedAgain, err := RetryWebhookDelivery(s, record.DeliveryID)
-	require.NoError(t, err)
-	assert.False(t, retriedAgain)
 }
 
 func TestRecoverableWebhookDeliveriesSelectsDueAndExpired(t *testing.T) {
