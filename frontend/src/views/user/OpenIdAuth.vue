@@ -3,6 +3,7 @@
 		<Message
 			v-if="errorMessage"
 			variant="danger"
+			:class="{'mbe-4': mode !== 'login'}"
 		>
 			{{ errorMessage }}
 		</Message>
@@ -16,6 +17,59 @@
 		<Message v-if="loading && !needsTotp">
 			{{ $t('user.auth.authenticating') }}
 		</Message>
+
+		<form
+			v-if="mode === 'link'"
+			@submit.prevent="linkIdentity"
+		>
+			<h2 class="title">
+				{{ $t('user.settings.linkedAccounts.confirmTitle', {provider: providerName}) }}
+			</h2>
+			<p class="mbe-4">
+				{{ $t('user.settings.linkedAccounts.confirmText', {provider: providerName}) }}
+			</p>
+			<FormField
+				id="linkIdentityPassword"
+				v-model="linkPassword"
+				v-focus
+				:label="$t('user.settings.currentPassword')"
+				:placeholder="$t('user.settings.currentPasswordPlaceholder')"
+				autocomplete="current-password"
+				type="password"
+			/>
+			<FormField
+				v-if="linkNeedsTotp"
+				id="linkIdentityPasscode"
+				v-model="linkTotpPasscode"
+				:label="$t('user.settings.totp.passcode')"
+				:placeholder="$t('user.settings.totp.passcodePlaceholder')"
+				autocomplete="one-time-code"
+				type="text"
+				inputmode="numeric"
+			/>
+			<div class="buttons mbs-4">
+				<XButton
+					type="submit"
+					:loading="linkMutation.isPending.value"
+				>
+					{{ $t('user.settings.linkedAccounts.confirm') }}
+				</XButton>
+				<XButton
+					variant="tertiary"
+					@click="cancelLinking"
+				>
+					{{ $t('misc.cancel') }}
+				</XButton>
+			</div>
+		</form>
+
+		<XButton
+			v-if="mode === 'linkFailed'"
+			class="mbs-2"
+			:to="{name: 'user.settings.linked-accounts'}"
+		>
+			{{ $t('user.settings.linkedAccounts.backToSettings') }}
+		</XButton>
 
 		<form
 			v-if="needsTotp"
@@ -52,14 +106,23 @@
 <script setup lang="ts">
 import type {VikunjaErrorModel} from '@/client/generated'
 import {ref, computed, onMounted} from 'vue'
-import {useRoute} from 'vue-router'
+import {useRoute, useRouter} from 'vue-router'
 import {useI18n} from 'vue-i18n'
+import {useQuery} from '@tanstack/vue-query'
 
 import {getErrorText} from '@/message'
 import Message from '@/components/misc/Message.vue'
 import FormField from '@/components/input/FormField.vue'
 import {useRedirectToLastVisited} from '@/composables/useRedirectToLastVisited'
-import {redirectToProvider} from '@/helpers/redirectToProvider'
+import {
+	clearLinkingMarker,
+	getRedirectUrlFromCurrentFrontendPath,
+	isLinkingIdentity,
+	redirectToProvider,
+} from '@/helpers/redirectToProvider'
+import {useLinkIdentityMutation} from '@/client/queries/identities'
+import {totpQuery} from '@/client/queries/totp'
+import {isRequestContextAbort} from '@/client/requestContext'
 
 import {useAuthStore} from '@/stores/auth'
 import {useConfigStore} from '@/stores/config'
@@ -82,6 +145,26 @@ const errorMessageFromQuery = computed(() => route.query.error)
 
 const needsTotp = ref(false)
 const totpPasscode = ref('')
+
+const router = useRouter()
+const mode = ref<'login' | 'link' | 'linkFailed'>('login')
+const linkPassword = ref('')
+const linkTotpPasscode = ref('')
+const linkMutation = useLinkIdentityMutation()
+const totp = useQuery(computed(() => ({
+	...totpQuery(),
+	enabled: mode.value === 'link' && configStore.totp_enabled,
+})))
+const linkNeedsTotp = computed(() => totp.data.value?.enabled === true)
+const providerName = computed(() => findProvider(route.params.provider as string)?.name ?? route.params.provider)
+
+// Rejected before the code exchange, so the same code still works on retry.
+const RETRYABLE_LINK_ERRORS = new Set([
+	1011, // wrong password
+	1017, // missing or wrong TOTP passcode
+	1039, // TOTP passcode reused
+	1041, // too many attempts
+])
 
 function pendingTotpKey(provider: string): string {
 	return `openid_pending_totp_${provider}`
@@ -108,6 +191,16 @@ async function authenticateWithCode() {
 	if (typeof route.query.state === 'undefined' || route.query.state !== state) {
 		sessionStorage.removeItem(pendingTotpKey(providerKey))
 		errorMessage.value = t('user.auth.openIdStateError')
+		return
+	}
+
+	if (isLinkingIdentity()) {
+		if (!authStore.authUser) {
+			clearLinkingMarker()
+			errorMessage.value = t('user.settings.linkedAccounts.noSession')
+			return
+		}
+		mode.value = 'link'
 		return
 	}
 
@@ -149,6 +242,45 @@ async function submitTotpAndRestart() {
 	sessionStorage.setItem(pendingTotpKey(providerKey), totpPasscode.value)
 	// The auth code is single-use; restart the OIDC flow so the next callback reads the stashed passcode.
 	redirectToProvider(provider)
+}
+
+async function linkIdentity() {
+	if (linkMutation.isPending.value) return
+
+	const providerKey = route.params.provider as string
+	const provider = findProvider(providerKey)
+	if (!provider) {
+		errorMessage.value = t('user.auth.openIdGeneralError')
+		return
+	}
+
+	errorMessage.value = ''
+	try {
+		await linkMutation.mutateAsync({
+			provider: providerKey,
+			code: route.query.code as string,
+			redirect_url: getRedirectUrlFromCurrentFrontendPath(provider),
+			password: linkPassword.value,
+			totp_passcode: linkNeedsTotp.value ? linkTotpPasscode.value : undefined,
+		})
+	} catch (e) {
+		if (isRequestContextAbort(e)) return
+		errorMessage.value = getErrorText(e)
+		const code = (e as VikunjaErrorModel)?.code
+		if (code === undefined || !RETRYABLE_LINK_ERRORS.has(code)) {
+			clearLinkingMarker()
+			mode.value = 'linkFailed'
+		}
+		return
+	}
+
+	clearLinkingMarker()
+	await router.push({name: 'user.settings.linked-accounts'})
+}
+
+function cancelLinking() {
+	clearLinkingMarker()
+	router.push({name: 'user.settings.linked-accounts'})
 }
 
 onMounted(() => authenticateWithCode())
