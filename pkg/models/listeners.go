@@ -1278,9 +1278,6 @@ func getIDAsInt64(id interface{}) int64 {
 		if i, err := v.Int64(); err == nil {
 			return i
 		}
-		if f, err := v.Float64(); err == nil {
-			return int64(f)
-		}
 		return 0
 	case string:
 		if i, err := strconv.ParseInt(v, 10, 64); err == nil {

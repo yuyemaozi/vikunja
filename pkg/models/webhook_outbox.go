@@ -17,6 +17,7 @@
 package models
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -95,7 +96,7 @@ func StageWebhookDeliveries(
 	requestID string,
 ) ([]events.Event, error) {
 	var event map[string]interface{}
-	if err := json.Unmarshal(prepared.Payload, &event); err != nil {
+	if err := decodeEventPayload(prepared.Payload, &event); err != nil {
 		return nil, err
 	}
 
@@ -143,7 +144,7 @@ func StageWebhookDeliveries(
 	results := make([]events.Event, 0, len(matchingWebhooks))
 	for _, webhook := range matchingWebhooks {
 		perWebhookEvent := make(map[string]interface{})
-		if err := json.Unmarshal(prepared.Payload, &perWebhookEvent); err != nil {
+		if err := decodeEventPayload(prepared.Payload, &perWebhookEvent); err != nil {
 			return nil, err
 		}
 
@@ -215,4 +216,10 @@ func WebhookSourceEventNames() []string {
 		names = append(names, event.Name())
 	}
 	return names
+}
+
+func decodeEventPayload(raw []byte, dst *map[string]interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	return decoder.Decode(dst)
 }
