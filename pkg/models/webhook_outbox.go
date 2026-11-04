@@ -142,9 +142,9 @@ func StageWebhookDeliveries(
 
 	results := make([]events.Event, 0, len(matchingWebhooks))
 	for _, webhook := range matchingWebhooks {
-		perWebhookEvent := make(map[string]interface{}, len(event)+1)
-		for key, value := range event {
-			perWebhookEvent[key] = value
+		perWebhookEvent := make(map[string]interface{})
+		if err := json.Unmarshal(prepared.Payload, &perWebhookEvent); err != nil {
+			return nil, err
 		}
 
 		if doerID != 0 {
