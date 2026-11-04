@@ -44,6 +44,7 @@ type WebhookDeliveryRecord struct {
 	DeliveryID    string          `xorm:"varchar(36) not null unique" json:"delivery_id"`
 	WebhookID     int64           `xorm:"bigint not null index" json:"webhook_id"`
 	EventName     string          `xorm:"varchar(255) not null" json:"event_name"`
+	RequestID     string          `xorm:"varchar(36) null" json:"request_id"`
 	Payload       *WebhookPayload `xorm:"JSON not null" json:"-"`
 	Status        string          `xorm:"varchar(16) not null index" json:"status"`
 	AttemptCount  int             `xorm:"int not null default 0" json:"attempt_count"`
@@ -60,11 +61,16 @@ func (*WebhookDeliveryRecord) TableName() string {
 }
 
 // CreateWebhookDelivery persists one immutable payload snapshot for a webhook.
-func CreateWebhookDelivery(s *xorm.Session, webhookID int64, payload *WebhookPayload) (*WebhookDeliveryRecord, error) {
+func CreateWebhookDelivery(s *xorm.Session, webhookID int64, payload *WebhookPayload, requestIDs ...string) (*WebhookDeliveryRecord, error) {
+	requestID := ""
+	if len(requestIDs) > 0 {
+		requestID = requestIDs[0]
+	}
 	record := &WebhookDeliveryRecord{
 		DeliveryID: uuid.NewString(),
 		WebhookID:  webhookID,
 		EventName:  payload.EventName,
+		RequestID:  requestID,
 		Payload:    payload,
 		Status:     WebhookDeliveryStatusPending,
 	}
@@ -119,7 +125,7 @@ func AttemptWebhookDelivery(deliveryID string) error {
 		return err
 	}
 
-	if err := webhook.sendWebhookPayload(record.Payload); err != nil {
+	if err := webhook.sendWebhookPayloadWithRequestID(record.Payload, record.RequestID); err != nil {
 		record.LastErrorCode = "delivery_failed"
 		if _, updateErr := s.ID(record.ID).
 			Cols("last_error_code").

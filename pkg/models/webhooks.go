@@ -352,6 +352,10 @@ func getWebhookHTTPClient() (client *http.Client) {
 }
 
 func (w *Webhook) sendWebhookPayload(p *WebhookPayload) (err error) {
+	return w.sendWebhookPayloadWithRequestID(p, "")
+}
+
+func (w *Webhook) sendWebhookPayloadWithRequestID(p *WebhookPayload, requestID string) (err error) {
 	payload, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -376,6 +380,9 @@ func (w *Webhook) sendWebhookPayload(p *WebhookPayload) (err error) {
 		req.Header.Add("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(w.BasicAuthUser+":"+w.BasicAuthPassword)))
 	}
 
+	if requestID != "" {
+		req.Header.Add("X-Request-ID", requestID)
+	}
 	req.Header.Add("User-Agent", "Vikunja/"+version.Version)
 	req.Header.Add("Content-Type", "application/json")
 

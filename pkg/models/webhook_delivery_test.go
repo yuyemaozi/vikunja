@@ -93,7 +93,10 @@ func TestCreateWebhookDeliveryPersistsSnapshot(t *testing.T) {
 
 func TestAttemptWebhookDeliveryDeliversAndMarksRecord(t *testing.T) {
 	allowLoopbackWebhook(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	const requestID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b"
+	var receivedRequestID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedRequestID = r.Header.Get("X-Request-ID")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -104,7 +107,7 @@ func TestAttemptWebhookDeliveryDeliversAndMarksRecord(t *testing.T) {
 		EventName: "task.updated",
 		Time:      time.Now(),
 		Data:      map[string]interface{}{},
-	})
+	}, requestID)
 	require.NoError(t, err)
 	require.NoError(t, s.Commit())
 	_ = s.Close()
@@ -112,6 +115,8 @@ func TestAttemptWebhookDeliveryDeliversAndMarksRecord(t *testing.T) {
 	require.NoError(t, AttemptWebhookDelivery(record.DeliveryID))
 
 	stored := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, requestID, stored.RequestID)
+	assert.Equal(t, requestID, receivedRequestID)
 	assert.Equal(t, WebhookDeliveryStatusDelivered, stored.Status)
 	assert.Equal(t, 1, stored.AttemptCount)
 	assert.NotNil(t, stored.DeliveredAt)

@@ -1687,11 +1687,12 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 		}
 
 		recordSession := db.NewAutocommitSession()
+		requestID := msg.Metadata.Get(events.MetadataKeyRequestID)
 		record, createErr := CreateWebhookDelivery(recordSession, webhook.ID, &WebhookPayload{
 			EventName: wl.EventName,
 			Time:      now,
 			Data:      perWebhookEvent,
-		})
+		}, requestID)
 		_ = recordSession.Close()
 		if createErr != nil {
 			// Persisting the outbox row failed. Log and continue with the other
