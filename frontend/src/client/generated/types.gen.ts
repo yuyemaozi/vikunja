@@ -11569,10 +11569,6 @@ export type UserIdentitiesLinkError = UserIdentitiesLinkErrors[keyof UserIdentit
 
 export type UserIdentitiesLinkResponses = {
     /**
-     * The identity was already linked to the user.
-     */
-    200: LinkedIdentity;
-    /**
      * Created
      */
     201: LinkedIdentity;

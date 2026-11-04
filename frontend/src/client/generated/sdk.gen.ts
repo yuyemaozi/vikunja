@@ -4021,7 +4021,7 @@ export const userIdentitiesList = <ThrowOnError extends boolean = true>(options?
 /**
  * Link an identity
  *
- * Links the OpenID Connect identity behind an authorization code to the authenticated user, so they can log in through that provider. Requires the current password, plus a totp passcode when totp is enabled; failures count toward the account lockout and are throttled per user (429). These are checked before the code is exchanged, so a rejected attempt can be retried with the same code. Returns 200 with the existing identity if it is already linked to the user. Fails with 409 if the identity belongs to another user or the user already linked this provider. Local accounts only.
+ * Links the OpenID Connect identity behind an authorization code to the authenticated user, so they can log in through that provider. Requires the current password, plus a totp passcode when totp is enabled; failures count toward the account lockout and are throttled per user (429). These are checked before the code is exchanged, so a rejected attempt can be retried with the same code. Relinking an identity already linked to the user returns it unchanged. Fails with 409 if the identity belongs to another user or the user already linked this provider. Local accounts only.
  */
 export const userIdentitiesLink = <ThrowOnError extends boolean = true>(options: Options<UserIdentitiesLinkData, ThrowOnError>): RequestResult<UserIdentitiesLinkResponses, UserIdentitiesLinkErrors, ThrowOnError> => (options.client ?? client).post<UserIdentitiesLinkResponses, UserIdentitiesLinkErrors, ThrowOnError>({
     security: [{
