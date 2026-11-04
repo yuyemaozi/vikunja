@@ -19,6 +19,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"xorm.io/xorm"
 )
 
 func TestWebhookRegistryHasExactly19Sources(t *testing.T) {
@@ -169,4 +171,54 @@ func TestRequestMetaBoundBeforeSnapshot(t *testing.T) {
 	require.NotEmpty(t, records)
 	assert.Equal(t, requestID, records[0].RequestID)
 	require.NoError(t, s.Rollback())
+}
+
+func TestTaskCreateRollsBackWhenSnapshotFails(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+
+	s := db.NewSession()
+	defer s.Close()
+	for index := 0; index < 2; index++ {
+		webhook := &Webhook{
+			TargetURL:   "https://example.com/hook",
+			Events:      []string{"task.created"},
+			ProjectID:   1,
+			CreatedByID: 1,
+		}
+		_, err := s.Insert(webhook)
+		require.NoError(t, err)
+	}
+	events.BindRequestMeta(
+		s,
+		events.WithRequestMeta(context.Background(), &events.RequestMeta{
+			RequestID: "018f8f4c-2e18-7b61-9a50-9c4f5de4e50b",
+		}),
+	)
+	defer events.CleanupPending(s)
+
+	previous := insertDeliverySnapshot
+	calls := 0
+	insertDeliverySnapshot = func(session *xorm.Session, record *WebhookDeliveryRecord) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected snapshot failure")
+		}
+		return previous(session, record)
+	}
+	t.Cleanup(func() { insertDeliverySnapshot = previous })
+
+	task := &Task{Title: "rollback snapshot", ProjectID: 1}
+	err := task.Create(s, &user.User{ID: 1})
+	require.Error(t, err)
+	require.NoError(t, s.Rollback())
+
+	check := db.NewSession()
+	defer check.Close()
+	taskCount, err := check.Where("title = ?", "rollback snapshot").Count(&Task{})
+	require.NoError(t, err)
+	assert.Zero(t, taskCount)
+	deliveryCount, err := check.Where("event_name = ?", "task.created").Count(&WebhookDeliveryRecord{})
+	require.NoError(t, err)
+	assert.Zero(t, deliveryCount)
 }

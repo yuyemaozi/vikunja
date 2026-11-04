@@ -204,7 +204,7 @@ func StageWebhookDeliveries(
 			PayloadSHA256: hex.EncodeToString(sum[:]),
 			CreatedAt:     time.Now().UTC(),
 		}
-		if _, err := s.Insert(record); err != nil {
+		if err := insertDeliverySnapshot(s, record); err != nil {
 			return nil, err
 		}
 		results = append(results, &WebhookDeliveryEvent{DeliveryID: deliveryID})
@@ -225,4 +225,10 @@ func decodeEventPayload(raw []byte, dst *map[string]interface{}) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	return decoder.Decode(dst)
+}
+
+// insertDeliverySnapshot is replaceable in tests to exercise rollback paths.
+var insertDeliverySnapshot = func(s *xorm.Session, record *WebhookDeliveryRecord) error {
+	_, err := s.Insert(record)
+	return err
 }
