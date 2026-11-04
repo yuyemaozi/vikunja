@@ -468,6 +468,10 @@ func fallbackSearchUsers(cl *claims, provider *Provider, idToken *oidc.IDToken) 
 }
 
 func logFallbackDeprecation(provider *Provider, u *user.User) {
+	if u.IsBot() {
+		return
+	}
+
 	log.Warningf(
 		"OpenID provider %q matched local user %d via the deprecated emailfallback/usernamefallback option. "+
 			"Both options will be removed in a future release; the user must link the provider from their account settings before then.",

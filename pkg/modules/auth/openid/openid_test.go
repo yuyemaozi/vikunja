@@ -685,6 +685,27 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 
 		assert.Contains(t, logged(), "matched local user 17 via the deprecated")
 	})
+	t.Run("bot fallback match", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		logged := captureWarnings(t)
+
+		cl := &claims{
+			Email:             "bot@example.com",
+			PreferredUsername: "bot-owner-a-assistant",
+		}
+		provider := &Provider{
+			Key:              "test",
+			UsernameFallback: true,
+		}
+		idToken := &oidc.IDToken{Issuer: "https://some.issuer", Subject: "c0ffee00-dead-beef-cafe-000000000023"}
+
+		u, err := getOrCreateUser(s, cl, provider, idToken)
+		assert.True(t, user.IsErrAccountIsBot(err))
+		assert.Nil(t, u)
+		assert.NotContains(t, logged(), "via the deprecated")
+	})
 	t.Run("no fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
