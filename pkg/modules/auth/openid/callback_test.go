@@ -260,10 +260,10 @@ func TestAuthenticateCallbackLinkedIdentity(t *testing.T) {
 		linkIdentity(t, 1, idp.URL, "avatar-sub")
 
 		s := db.NewSession()
+		defer s.Close()
 		_, err := s.ID(1).Cols("avatar_provider").Update(&user.User{AvatarProvider: "openid"})
 		require.NoError(t, err)
 		require.NoError(t, s.Commit())
-		s.Close()
 
 		idp.setClaims(map[string]any{
 			"sub":                "avatar-sub",
@@ -272,7 +272,6 @@ func TestAuthenticateCallbackLinkedIdentity(t *testing.T) {
 		})
 		u, _, err := AuthenticateCallback(t.Context(), &Callback{Code: "code"}, mockIDPProviderKey)
 		require.NoError(t, err)
-		avatar.WaitForProviderSyncsForTests()
 
 		assert.Equal(t, int64(1), u.ID)
 		db.AssertExists(t, "users", map[string]interface{}{
