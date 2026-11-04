@@ -428,3 +428,38 @@ func TestDeliveryHTTPHonorsCallerDeadline(t *testing.T) {
 	assert.NotEqual(t, "delivered", result.Status)
 	assert.Equal(t, WebhookDeliveryStatusPending, loadDelivery(t, record.DeliveryID).Status)
 }
+
+func TestLegacyAttemptCannotStealValidLease(t *testing.T) {
+	allowLoopbackWebhook(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	webhook := newTestWebhook(t, server.URL)
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+
+	now := time.Now().UTC()
+	s = db.NewSession()
+	lease, result, err := ClaimWebhookDelivery(s, record.DeliveryID, DeliveryModeNormal, now, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "processing", result.Status)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	require.NoError(t, AttemptWebhookDelivery(record.DeliveryID))
+	assert.Zero(t, requests.Load(), "a valid lease must block the legacy attempt")
+
+	persisted := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, WebhookDeliveryStatusProcessing, persisted.Status)
+	assert.Equal(t, lease.Token, persisted.LeaseToken)
+}
