@@ -192,9 +192,15 @@ var deliveryBackoff = []time.Duration{
 }
 
 const (
-	deliveryLeaseTTL   = 30 * time.Second
-	deliveryMaxAttempt = 6
+	deliveryLeaseTTL     = 30 * time.Second
+	deliveryMaxAttempt   = 6
+	deliveryDBPhaseLimit = 5 * time.Second
 )
+
+func newDeliveryPhase(ctx context.Context) (*xorm.Session, context.CancelFunc) {
+	phaseCtx, cancel := context.WithTimeout(ctx, deliveryDBPhaseLimit)
+	return db.NewSession().Context(phaseCtx), cancel
+}
 
 var deliverySleeper = func(ctx context.Context, duration time.Duration) error {
 	if duration <= 0 {
@@ -229,13 +235,15 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "deadline"}
 		}
 
-		session := db.NewSession()
+		session, cancel := newDeliveryPhase(ctx)
 		lease, result, err := ClaimWebhookDelivery(session, id, claimMode, now, deliveryLeaseTTL)
 		if err != nil {
+			cancel()
 			_ = session.Close()
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
 		}
 		if result.Status != "processing" {
+			cancel()
 			_ = session.Close()
 			return result
 		}
@@ -250,6 +258,7 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 		if commitErr := session.Commit(); commitErr != nil {
 			err = commitErr
 		}
+		cancel()
 		_ = session.Close()
 		if err != nil || !has {
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "read_failed"}
@@ -272,16 +281,18 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 			}
 		}
 
-		completeSession := db.NewSession()
+		completeSession, cancelComplete := newDeliveryPhase(ctx)
 		completed, err := CompleteWebhookDelivery(completeSession, id, lease, deliveryNow(), outcome)
 		if err != nil || !completed {
 			_ = completeSession.Close()
 			return DeliveryResult{DeliveryID: id, Status: "busy", ErrorCode: "lease_lost"}
 		}
 		if commitErr := completeSession.Commit(); commitErr != nil {
+			cancelComplete()
 			_ = completeSession.Close()
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
 		}
+		cancelComplete()
 		_ = completeSession.Close()
 
 		switch outcome.Kind {
