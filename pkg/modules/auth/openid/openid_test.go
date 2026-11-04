@@ -685,7 +685,9 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(17), u.ID)
 
-		assert.Contains(t, logged(), "matched local user 17 via the deprecated")
+		out := logged()
+		assert.Contains(t, out, expectedFallbackWarning(17))
+		assert.Equal(t, 1, strings.Count(out, fallbackWarningMarker))
 	})
 	t.Run("no fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
@@ -712,7 +714,7 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "https://some.issuer", u.Issuer)
 
-		assert.NotContains(t, logged(), "deprecated")
+		assert.NotContains(t, logged(), fallbackWarningMarker)
 	})
 }
 
