@@ -20,6 +20,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,4 +180,54 @@ func TestDeliveryExpiredOwnerCannotFinalize(t *testing.T) {
 	_ = s.Close()
 
 	assert.Equal(t, WebhookDeliveryStatusDelivered, loadDelivery(t, record.DeliveryID).Status)
+}
+
+func TestDeliveryCASConcurrentNormalAndRecover(t *testing.T) {
+	if os.Getenv("VIKUNJA_DATABASE_TYPE") != "postgres" {
+		t.Skip("concurrency CAS requires postgres")
+	}
+
+	webhook := newTestWebhook(t, "https://example.com/hook")
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	now := time.Now().UTC()
+	results := make(chan string, 2)
+	var wg sync.WaitGroup
+	for index := 0; index < 2; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			session := db.NewSession()
+			defer session.Close()
+			_, result, claimErr := ClaimWebhookDelivery(
+				session, record.DeliveryID, DeliveryModeNormal, now, 30*time.Second,
+			)
+			if claimErr != nil {
+				results <- "error"
+				return
+			}
+			if commitErr := session.Commit(); commitErr != nil {
+				results <- "error"
+				return
+			}
+			results <- result.Status
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	statuses := map[string]int{}
+	for status := range results {
+		statuses[status]++
+	}
+	assert.Equal(t, 1, statuses["processing"])
+	assert.Equal(t, 1, statuses["busy"])
 }
