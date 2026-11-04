@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/events"
 	"code.vikunja.io/api/pkg/user"
@@ -79,4 +80,45 @@ func TestTransactionalSinkBeforeEnqueue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, count)
 	_ = after.Close()
+}
+
+func TestWebhookDisabledDoesNotStage(t *testing.T) {
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(false)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
+
+	db.LoadAndAssertFixtures(t)
+	payload, err := json.Marshal(&TaskUpdatedEvent{
+		Task: &Task{ID: 1, ProjectID: 1},
+		Doer: &user.User{ID: 1},
+	})
+	require.NoError(t, err)
+
+	s := db.NewSession()
+	defer s.Close()
+	_, err = stageWebhookDeliveries(s, events.PreparedEvent{
+		ID:         "018f8f4c-2e18-7b61-9a50-9c4f5de4e10c",
+		Name:       "task.updated",
+		OccurredAt: time.Now().UTC(),
+		Payload:    payload,
+	}, events.RequestMeta{})
+	require.NoError(t, err)
+
+	count, err := s.Where("event_id = ?", "018f8f4c-2e18-7b61-9a50-9c4f5de4e10c").
+		Count(&WebhookDeliveryRecord{})
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
+func TestWebhookSinkReadyWithoutAsync(t *testing.T) {
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
+
+	require.NoError(t, RegisterWebhookOutbox())
+	err := events.DispatchOnCommit(new(int), &TaskUpdatedEvent{
+		Task: &Task{ID: 1, ProjectID: 1},
+		Doer: &user.User{ID: 1},
+	})
+	assert.ErrorIs(t, err, events.ErrWebhookTransactionRequired)
 }
