@@ -52,6 +52,8 @@ const ProjectHomeSetPath = ProjectBasePath + `/`
 
 // VikunjaCaldavProjectStorage represents a project storage
 type VikunjaCaldavProjectStorage struct {
+	// Request context used to bind correlation IDs for writes.
+	requestContext context.Context
 	// Used when handling a project
 	project *models.ProjectWithTasksAndBuckets
 	// Used when handling a single task, like updating
@@ -546,6 +548,8 @@ func (vcls *VikunjaCaldavProjectStorage) CreateResource(rpath, content string) (
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, vcls.requestContext)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	// Denying here would make PUT an oracle for collections every other verb answers 404 for.
@@ -673,6 +677,8 @@ func applyDescriptionFromMarkdown(s *xorm.Session, vTask *models.Task, storedHTM
 func (vcls *VikunjaCaldavProjectStorage) UpdateResource(rpath, content string) (*data.Resource, error) {
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, vcls.requestContext)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	if err := vcls.checkCollectionWrite(s, vcls.task); err != nil {
@@ -845,6 +851,8 @@ func (vcls *VikunjaCaldavProjectStorage) UpdateResource(rpath, content string) (
 // DeleteResource deletes a resource
 func (vcls *VikunjaCaldavProjectStorage) DeleteResource(_ string) error {
 	s := db.NewSession()
+	events.BindRequestMeta(s, vcls.requestContext)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	if err := vcls.checkCollectionWrite(s, vcls.task); err != nil {

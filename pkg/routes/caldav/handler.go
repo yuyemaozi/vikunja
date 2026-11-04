@@ -74,8 +74,9 @@ func ProjectHandler(c *echo.Context) error {
 	}
 
 	storage := &VikunjaCaldavProjectStorage{
-		project: project,
-		user:    u,
+		project:        project,
+		user:           u,
+		requestContext: c.Request().Context(),
 	}
 
 	// Try to parse a task from the request payload
