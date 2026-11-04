@@ -18,6 +18,7 @@ package models
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -374,4 +375,35 @@ func TestDeliveryNetworkDoesNotHoldDBTransaction(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("driver did not finish")
 	}
+}
+
+func TestDeliverySendsPersistedBytes(t *testing.T) {
+	allowLoopbackWebhook(t)
+	withFakeDeliveryClock(t)
+	body := []byte(`{"event_name":"task.updated","time":"2026-11-04T00:00:00Z","data":{"n":12345678901234567890}}`)
+	var received []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	webhook := newTestWebhook(t, server.URL)
+	s := db.NewSession()
+	record := &WebhookDeliveryRecord{
+		DeliveryID:  "018f8f4c-2e18-7b61-9a50-9c4f5de4e301",
+		WebhookID:   webhook.ID,
+		EventName:   "task.updated",
+		Payload:     &WebhookPayload{EventName: "task.updated", Data: map[string]interface{}{"n": 1}},
+		PayloadBody: body,
+		Status:      WebhookDeliveryStatusPending,
+	}
+	_, err := s.Insert(record)
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	result := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+	assert.Equal(t, "delivered", result.Status)
+	assert.Equal(t, body, received)
 }

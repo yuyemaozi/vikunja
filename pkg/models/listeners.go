@@ -85,16 +85,6 @@ func RegisterListeners() {
 
 		// Internal delivery listener — one message per webhook with its own retry lifecycle
 		events.RegisterListener((&WebhookDeliveryEvent{}).Name(), &WebhookDeliveryListener{})
-		events.RegisterPoisonHandler((&WebhookDeliveryListener{}).Name(), func(payload []byte, _ string) {
-			evt := &WebhookDeliveryEvent{}
-			if err := json.Unmarshal(payload, evt); err != nil || evt.DeliveryID == "" {
-				log.Errorf("Could not mark poisoned webhook delivery: invalid payload")
-				return
-			}
-			if err := MarkWebhookDeliveryPoisoned(evt.DeliveryID); err != nil {
-				log.Errorf("Could not mark webhook delivery %s as poisoned: %s", evt.DeliveryID, err)
-			}
-		})
 	}
 	if config.AuditEnabled.GetBool() {
 		registerEventsForAuditLogging()

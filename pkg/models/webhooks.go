@@ -25,7 +25,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -357,7 +356,11 @@ func (w *Webhook) sendWebhookPayloadWithRequestID(p *WebhookPayload, requestID s
 	if err != nil {
 		return err
 	}
+	return w.sendWebhookRaw(payload, requestID)
+}
 
+// sendWebhookRaw sends the exact persisted bytes without re-serializing.
+func (w *Webhook) sendWebhookRaw(payload []byte, requestID string) (err error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.TargetURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -392,15 +395,10 @@ func (w *Webhook) sendWebhookPayloadWithRequestID(p *WebhookPayload, requestID s
 	defer res.Body.Close()
 
 	if res.StatusCode > 399 {
-		responseBody, readErr := io.ReadAll(io.LimitReader(res.Body, maxWebhookErrorBodySize))
-		if readErr != nil {
-			return fmt.Errorf("webhook %d returned status %d and reading its body failed: %w", w.ID, res.StatusCode, readErr)
-		}
-
-		log.Errorf("Got response with status %d from webhook %d: %s", res.StatusCode, w.ID, responseBody)
+		log.Errorf("Got response with status %d from webhook %d", res.StatusCode, w.ID)
 		return fmt.Errorf("webhook %d returned non-success status %d", w.ID, res.StatusCode)
 	}
 
-	log.Debugf("Sent webhook payload for webhook %d for event %s", w.ID, p.EventName)
+	log.Debugf("Sent webhook payload for webhook %d", w.ID)
 	return
 }

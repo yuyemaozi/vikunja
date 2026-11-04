@@ -35,7 +35,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWebhookErrorResponseBodyIsTruncated(t *testing.T) {
+func TestWebhookErrorResponseBodyIsNotLogged(t *testing.T) {
 	const bodyMarker = "A"
 	const bodySize = 5 << 20
 
@@ -68,9 +68,7 @@ func TestWebhookErrorResponseBodyIsTruncated(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, string(logged), "from webhook 42")
-	loggedBodyBytes := strings.Count(string(logged), bodyMarker)
-	assert.Positive(t, loggedBodyBytes, "the response body should still be logged for diagnostics")
-	assert.LessOrEqual(t, loggedBodyBytes, maxWebhookErrorBodySize, "the response body must not be read and logged unbounded")
+	assert.Zero(t, strings.Count(string(logged), bodyMarker), "the response body must never be logged")
 }
 
 // Target URLs often embed the receiver's credential, so reading them needs write access.

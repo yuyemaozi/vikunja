@@ -18,6 +18,7 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -79,8 +80,9 @@ func ClaimWebhookDelivery(
 	where := ""
 	switch mode {
 	case DeliveryModeNormal, DeliveryModeRecover:
-		where = "(status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) " +
-			"OR (status = 'processing' AND lease_until <= ?)"
+		where = "(status = 'pending' AND cycle_attempt_count < 6 " +
+			"AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) " +
+			"OR (status = 'processing' AND cycle_attempt_count < 6 AND lease_until <= ?)"
 	case DeliveryModeRetry:
 		where = "status = 'failed'"
 	default:
@@ -267,7 +269,7 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 		outcome := DeliveryOutcome{Kind: OutcomeDelivered}
 		if !webhookFound {
 			outcome = DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
-		} else if sendErr := webhook.sendWebhookPayloadWithRequestID(record.Payload, record.RequestID); sendErr != nil {
+		} else if sendErr := sendPersistedWebhook(webhook, record); sendErr != nil {
 			if lease.Attempt >= deliveryMaxAttempt {
 				outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
 			} else {
@@ -313,4 +315,19 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func sendPersistedWebhook(webhook *Webhook, record *WebhookDeliveryRecord) error {
+	body := record.PayloadBody
+	if len(body) == 0 {
+		if record.Payload == nil {
+			return fmt.Errorf("webhook delivery %s has no persisted payload", record.DeliveryID)
+		}
+		var err error
+		body, err = json.Marshal(record.Payload)
+		if err != nil {
+			return err
+		}
+	}
+	return webhook.sendWebhookRaw(body, record.RequestID)
 }
