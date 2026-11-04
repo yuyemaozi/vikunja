@@ -74,3 +74,29 @@ func TestTransactionalSinkRejectsAutocommit(t *testing.T) {
 	err := DispatchOnCommit(new(int), &transactionalTestEvent{})
 	assert.ErrorIs(t, err, ErrWebhookTransactionRequired)
 }
+
+func TestTransactionRequestIDGeneratedOnce(t *testing.T) {
+	resetTransactionalSinks()
+	t.Cleanup(resetTransactionalSinks)
+	key := new(int)
+
+	BindRequestMeta(key, context.Background())
+	first := pendingQueue(key).requestID
+	require.NotEmpty(t, first)
+
+	require.NoError(t, DispatchOnCommit(key, &transactionalTestEvent{}))
+	require.NoError(t, DispatchOnCommit(key, &transactionalTestEvent{}))
+	assert.Equal(t, first, pendingQueue(key).requestID)
+	CleanupPending(key)
+}
+
+func TestBoundRequestIDIsNotReplaced(t *testing.T) {
+	key := new(int)
+	defer CleanupPending(key)
+
+	const first = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b"
+	const second = "11111111-1111-1111-1111-111111111111"
+	BindRequestMeta(key, WithRequestMeta(context.Background(), &RequestMeta{RequestID: first}))
+	BindRequestMeta(key, WithRequestMeta(context.Background(), &RequestMeta{RequestID: second}))
+	assert.Equal(t, first, pendingQueue(key).requestID)
+}
