@@ -36,7 +36,15 @@ func (webhookDeliveriesLease20261104000200) TableName() string {
 }
 
 func migrateWebhookDeliveriesLease20261104000200(x *xorm.Engine) error {
-	return partialSync(x, &webhookDeliveriesLease20261104000200{})
+	if err := partialSync(x, &webhookDeliveriesLease20261104000200{}); err != nil {
+		return err
+	}
+	// Legacy processing rows have no lease and cannot be fenced; make them claimable.
+	_, err := x.Exec(
+		"UPDATE webhook_deliveries SET status = 'pending', cycle_attempt_count = 0 " +
+			"WHERE status = 'processing'",
+	)
+	return err
 }
 
 func init() {
