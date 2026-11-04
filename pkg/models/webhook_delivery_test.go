@@ -68,6 +68,23 @@ func allowLoopbackWebhook(t *testing.T) {
 	})
 }
 
+func TestCreateOrGetWebhookDeliveryIsIdempotent(t *testing.T) {
+	webhook := newTestWebhook(t, "https://example.com/hook")
+	payload := &WebhookPayload{EventName: "task.updated", Time: time.Now(), Data: map[string]interface{}{}}
+	deliveryID := "11111111-1111-1111-1111-111111111111"
+
+	s := db.NewSession()
+	defer s.Close()
+	first, created, err := CreateOrGetWebhookDelivery(s, deliveryID, webhook.ID, payload, "")
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	second, createdAgain, err := CreateOrGetWebhookDelivery(s, deliveryID, webhook.ID, payload, "")
+	require.NoError(t, err)
+	assert.False(t, createdAgain)
+	assert.Equal(t, first.DeliveryID, second.DeliveryID)
+}
+
 func TestCreateWebhookDeliveryPersistsSnapshot(t *testing.T) {
 	webhook := newTestWebhook(t, "https://example.com/hook")
 	payload := &WebhookPayload{
@@ -164,6 +181,31 @@ func TestAttemptWebhookDeliveryCancelsDeletedWebhook(t *testing.T) {
 
 	stored := loadDelivery(t, record.DeliveryID)
 	assert.Equal(t, WebhookDeliveryStatusCancelled, stored.Status)
+}
+
+func TestClaimWebhookDeliveryForRecoveryIsExclusive(t *testing.T) {
+	webhook := newTestWebhook(t, "https://example.com/hook")
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	claimSession := db.NewAutocommitSession()
+	claimed, err := ClaimWebhookDeliveryForRecovery(claimSession, record.DeliveryID)
+	_ = claimSession.Close()
+	require.NoError(t, err)
+	assert.True(t, claimed)
+
+	secondSession := db.NewAutocommitSession()
+	claimedAgain, err := ClaimWebhookDeliveryForRecovery(secondSession, record.DeliveryID)
+	_ = secondSession.Close()
+	require.NoError(t, err)
+	assert.False(t, claimedAgain)
 }
 
 func TestMarkWebhookDeliveryPoisonedAndRetry(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/initialize"
@@ -49,6 +50,36 @@ var webhookDeliveriesListCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		printWebhookDeliveries(os.Stdout, records)
+	},
+}
+
+var webhookDeliveriesRecoverCmd = &cobra.Command{
+	Use:   "recover",
+	Short: "Claim and deliver pending webhook deliveries older than a cutoff",
+	PreRun: func(_ *cobra.Command, _ []string) {
+		initialize.FullInitWithoutAsync()
+	},
+	Run: func(_ *cobra.Command, _ []string) {
+		s := db.NewAutocommitSession()
+		records, err := models.RecoverableWebhookDeliveries(s, time.Now().Add(-5*time.Minute))
+		_ = s.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not list pending webhook deliveries: %v\n", err)
+			os.Exit(1)
+		}
+		for _, record := range records {
+			session := db.NewAutocommitSession()
+			claimed, claimErr := models.ClaimWebhookDeliveryForRecovery(session, record.DeliveryID)
+			_ = session.Close()
+			if claimErr != nil || !claimed {
+				continue
+			}
+			if err := models.AttemptWebhookDelivery(record.DeliveryID); err != nil {
+				fmt.Fprintf(os.Stderr, "Webhook delivery %s failed: %v\n", record.DeliveryID, err)
+				continue
+			}
+			fmt.Printf("Webhook delivery %s recovered\n", record.DeliveryID)
+		}
 	},
 }
 
@@ -81,7 +112,7 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(webhookDeliveriesCmd)
-	webhookDeliveriesCmd.AddCommand(webhookDeliveriesListCmd, webhookDeliveriesRetryCmd)
+	webhookDeliveriesCmd.AddCommand(webhookDeliveriesListCmd, webhookDeliveriesRetryCmd, webhookDeliveriesRecoverCmd)
 }
 
 func printWebhookDeliveries(out io.Writer, records []*models.WebhookDeliveryRecord) {

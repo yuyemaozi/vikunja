@@ -32,6 +32,7 @@ import (
 	"code.vikunja.io/api/pkg/user"
 
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/google/uuid"
 	"xorm.io/xorm"
 )
 
@@ -1649,6 +1650,7 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 	}
 
 	now := time.Now()
+	var fanoutErr error
 	for _, webhook := range matchingWebhooks {
 		// Clone the event map so each webhook gets its own, isolated payload.
 		// Otherwise adding event["project"] for one webhook would leak into
@@ -1688,17 +1690,32 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 
 		recordSession := db.NewAutocommitSession()
 		requestID := msg.Metadata.Get(events.MetadataKeyRequestID)
-		record, createErr := CreateWebhookDelivery(recordSession, webhook.ID, &WebhookPayload{
-			EventName: wl.EventName,
-			Time:      now,
-			Data:      perWebhookEvent,
-		}, requestID)
+		deliveryID := uuid.NewSHA1(
+			uuid.NameSpaceOID,
+			[]byte(fmt.Sprintf("%s:%d:%s", msg.UUID, webhook.ID, wl.EventName)),
+		).String()
+		record, created, createErr := CreateOrGetWebhookDelivery(
+			recordSession,
+			deliveryID,
+			webhook.ID,
+			&WebhookPayload{
+				EventName: wl.EventName,
+				Time:      now,
+				Data:      perWebhookEvent,
+			},
+			requestID,
+		)
 		_ = recordSession.Close()
 		if createErr != nil {
-			// Persisting the outbox row failed. Log and continue with the other
-			// webhooks instead of retrying the parent fan-out, which would
-			// duplicate deliveries that were already committed.
+			// Return the error so the parent message is retried. Stable delivery
+			// ids make the retried fan-out idempotent for rows already written.
 			log.Errorf("Could not persist webhook delivery for webhook %d: %s", webhook.ID, createErr)
+			if fanoutErr == nil {
+				fanoutErr = createErr
+			}
+			continue
+		}
+		if !created && record.Status != WebhookDeliveryStatusPending {
 			continue
 		}
 
@@ -1712,7 +1729,7 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 		}
 	}
 
-	return nil
+	return fanoutErr
 }
 
 ///////

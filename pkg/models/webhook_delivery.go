@@ -35,6 +35,8 @@ const (
 	WebhookDeliveryStatusFailed = "failed"
 	// WebhookDeliveryStatusCancelled means the webhook was deleted before delivery.
 	WebhookDeliveryStatusCancelled = "cancelled"
+	// WebhookDeliveryStatusProcessing marks a delivery claimed by a recovery run.
+	WebhookDeliveryStatusProcessing = "processing"
 )
 
 // WebhookDeliveryRecord is the durable outbox entry for a single webhook delivery.
@@ -66,8 +68,36 @@ func CreateWebhookDelivery(s *xorm.Session, webhookID int64, payload *WebhookPay
 	if len(requestIDs) > 0 {
 		requestID = requestIDs[0]
 	}
+	record, _, err := CreateOrGetWebhookDelivery(
+		s,
+		uuid.NewString(),
+		webhookID,
+		payload,
+		requestID,
+	)
+	return record, err
+}
+
+// CreateOrGetWebhookDelivery persists one delivery under a stable id. A retried
+// fan-out reuses the same id and must not create a second row.
+func CreateOrGetWebhookDelivery(
+	s *xorm.Session,
+	deliveryID string,
+	webhookID int64,
+	payload *WebhookPayload,
+	requestID string,
+) (*WebhookDeliveryRecord, bool, error) {
+	existing := &WebhookDeliveryRecord{}
+	has, err := s.Where("delivery_id = ?", deliveryID).Get(existing)
+	if err != nil {
+		return nil, false, err
+	}
+	if has {
+		return existing, false, nil
+	}
+
 	record := &WebhookDeliveryRecord{
-		DeliveryID: uuid.NewString(),
+		DeliveryID: deliveryID,
 		WebhookID:  webhookID,
 		EventName:  payload.EventName,
 		RequestID:  requestID,
@@ -75,9 +105,14 @@ func CreateWebhookDelivery(s *xorm.Session, webhookID int64, payload *WebhookPay
 		Status:     WebhookDeliveryStatusPending,
 	}
 	if _, err := s.Insert(record); err != nil {
-		return nil, err
+		// A concurrent fan-out may have inserted the same stable id first.
+		has, getErr := s.Where("delivery_id = ?", deliveryID).Get(existing)
+		if getErr == nil && has {
+			return existing, false, nil
+		}
+		return nil, false, err
 	}
-	return record, nil
+	return record, true, nil
 }
 
 // AttemptWebhookDelivery performs one delivery attempt from the persisted snapshot.
@@ -126,9 +161,10 @@ func AttemptWebhookDelivery(deliveryID string) error {
 	}
 
 	if err := webhook.sendWebhookPayloadWithRequestID(record.Payload, record.RequestID); err != nil {
+		record.Status = WebhookDeliveryStatusPending
 		record.LastErrorCode = "delivery_failed"
 		if _, updateErr := s.ID(record.ID).
-			Cols("last_error_code").
+			Cols("status", "last_error_code").
 			Update(record); updateErr != nil {
 			return updateErr
 		}
@@ -165,6 +201,37 @@ func MarkWebhookDeliveryPoisoned(deliveryID string) error {
 			LastErrorCode: "poisoned",
 		})
 	return err
+}
+
+// ClaimWebhookDeliveryForRecovery atomically claims a pending or failed row.
+func ClaimWebhookDeliveryForRecovery(s *xorm.Session, deliveryID string) (bool, error) {
+	result, err := s.Exec(
+		"UPDATE webhook_deliveries SET status = ? WHERE delivery_id = ? AND status IN (?, ?)",
+		WebhookDeliveryStatusProcessing,
+		deliveryID,
+		WebhookDeliveryStatusPending,
+		WebhookDeliveryStatusFailed,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+// RecoverableWebhookDeliveries lists pending rows older than the cutoff.
+func RecoverableWebhookDeliveries(
+	s *xorm.Session,
+	olderThan time.Time,
+) ([]*WebhookDeliveryRecord, error) {
+	records := make([]*WebhookDeliveryRecord, 0)
+	err := s.Where("status = ? AND created_at < ?", WebhookDeliveryStatusPending, olderThan).
+		OrderBy("created_at ASC, id ASC").
+		Find(&records)
+	return records, err
 }
 
 // RetryWebhookDelivery atomically moves one failed delivery back to pending.
