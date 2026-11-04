@@ -42,6 +42,7 @@ func loadIdentityTestUser(t *testing.T, id int64) *user.User {
 	reset := func() {
 		_ = keyvalue.Del(u.GetFailedPasswordAttemptsKey())
 		_ = keyvalue.Del(u.GetFailedTOTPAttemptsKey())
+		_ = keyvalue.Del(u.GetReauthAttemptsKey())
 	}
 	reset()
 	t.Cleanup(reset)

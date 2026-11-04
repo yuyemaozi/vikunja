@@ -241,6 +241,10 @@ func (u *User) GetFailedPasswordAttemptsKey() string {
 	return "failed_password_attempts_" + strconv.FormatInt(u.ID, 10)
 }
 
+func (u *User) GetReauthAttemptsKey() string {
+	return reauthAttemptsKey(u.ID)
+}
+
 // GetFromAuth returns a user object from a web.Auth object and returns an error if the underlying type
 // is not a user object
 func GetFromAuth(a web.Auth) (*User, error) {
