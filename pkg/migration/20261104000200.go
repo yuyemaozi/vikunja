@@ -24,9 +24,11 @@ import (
 )
 
 type webhookDeliveriesLease20261104000200 struct {
-	LeaseToken string     `xorm:"varchar(36) null"`
-	LeaseUntil *time.Time `xorm:"timestamp null"`
-	Generation int        `xorm:"int not null default 0"`
+	LeaseToken        string     `xorm:"varchar(36) null"`
+	LeaseUntil        *time.Time `xorm:"timestamp null"`
+	RetryGeneration   int        `xorm:"retry_generation int not null default 0"`
+	CycleAttemptCount int        `xorm:"cycle_attempt_count int not null default 0"`
+	NextAttemptAt     *time.Time `xorm:"next_attempt_at timestamp null"`
 }
 
 func (webhookDeliveriesLease20261104000200) TableName() string {

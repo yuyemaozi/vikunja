@@ -42,25 +42,27 @@ const (
 // WebhookDeliveryRecord is the durable outbox entry for a single webhook delivery.
 // It stores the payload snapshot but never the target URL or credentials.
 type WebhookDeliveryRecord struct {
-	ID            int64           `xorm:"bigint autoincr not null unique pk" json:"-"`
-	DeliveryID    string          `xorm:"varchar(36) not null unique" json:"delivery_id"`
-	WebhookID     int64           `xorm:"bigint not null index" json:"webhook_id"`
-	EventName     string          `xorm:"varchar(255) not null" json:"event_name"`
-	RequestID     string          `xorm:"varchar(36) null" json:"request_id"`
-	EventID       string          `xorm:"varchar(36) null" json:"event_id"`
-	PayloadBody   []byte          `xorm:"blob null" json:"-"`
-	PayloadSHA256 string          `xorm:"'payload_sha256' varchar(64) null" json:"payload_sha256"`
-	LeaseToken    string          `xorm:"varchar(36) null" json:"-"`
-	LeaseUntil    *time.Time      `xorm:"timestamp null" json:"-"`
-	Generation    int             `xorm:"int not null default 0" json:"generation"`
-	Payload       *WebhookPayload `xorm:"JSON not null" json:"-"`
-	Status        string          `xorm:"varchar(16) not null index" json:"status"`
-	AttemptCount  int             `xorm:"int not null default 0" json:"attempt_count"`
-	LastErrorCode string          `xorm:"varchar(64) null" json:"last_error_code"`
-	CreatedAt     time.Time       `xorm:"created not null" json:"created_at"`
-	LastAttemptAt *time.Time      `xorm:"null" json:"last_attempt_at"`
-	DeliveredAt   *time.Time      `xorm:"null" json:"delivered_at"`
-	FailedAt      *time.Time      `xorm:"null" json:"failed_at"`
+	ID                int64           `xorm:"bigint autoincr not null unique pk" json:"-"`
+	DeliveryID        string          `xorm:"varchar(36) not null unique" json:"delivery_id"`
+	WebhookID         int64           `xorm:"bigint not null index" json:"webhook_id"`
+	EventName         string          `xorm:"varchar(255) not null" json:"event_name"`
+	RequestID         string          `xorm:"varchar(36) null" json:"request_id"`
+	EventID           string          `xorm:"varchar(36) null" json:"event_id"`
+	PayloadBody       []byte          `xorm:"blob null" json:"-"`
+	PayloadSHA256     string          `xorm:"'payload_sha256' varchar(64) null" json:"payload_sha256"`
+	LeaseToken        string          `xorm:"varchar(36) null" json:"-"`
+	LeaseUntil        *time.Time      `xorm:"timestamp null" json:"-"`
+	RetryGeneration   int             `xorm:"retry_generation int not null default 0" json:"retry_generation"`
+	CycleAttemptCount int             `xorm:"cycle_attempt_count int not null default 0" json:"cycle_attempt_count"`
+	NextAttemptAt     *time.Time      `xorm:"next_attempt_at timestamp null" json:"next_attempt_at"`
+	Payload           *WebhookPayload `xorm:"JSON not null" json:"-"`
+	Status            string          `xorm:"varchar(16) not null index" json:"status"`
+	AttemptCount      int             `xorm:"int not null default 0" json:"attempt_count"`
+	LastErrorCode     string          `xorm:"varchar(64) null" json:"last_error_code"`
+	CreatedAt         time.Time       `xorm:"created not null" json:"created_at"`
+	LastAttemptAt     *time.Time      `xorm:"null" json:"last_attempt_at"`
+	DeliveredAt       *time.Time      `xorm:"null" json:"delivered_at"`
+	FailedAt          *time.Time      `xorm:"null" json:"failed_at"`
 }
 
 // TableName returns the table name of the outbox.
