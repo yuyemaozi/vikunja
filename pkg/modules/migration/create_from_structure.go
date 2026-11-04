@@ -66,6 +66,8 @@ func insertFromStructureWithFileProvider(str []*models.ProjectWithTasksAndBucket
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	// Callers may pass a user built from jwt claims; load the stored one so
