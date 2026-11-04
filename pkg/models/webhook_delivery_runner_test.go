@@ -324,3 +324,54 @@ func TestDeliveryDriverDeadlineBoundsAttempts(t *testing.T) {
 	assert.NotEqual(t, "delivered", result.Status)
 	assert.NotEqual(t, "failed", result.Status)
 }
+
+func TestDeliveryNetworkDoesNotHoldDBTransaction(t *testing.T) {
+	allowLoopbackWebhook(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	record := newPendingDelivery(t, server.URL)
+	resultCh := make(chan DeliveryResult, 1)
+	go func() {
+		resultCh <- RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("driver never reached the HTTP send")
+	}
+
+	queries := make(chan int, 1)
+	go func() {
+		s := db.NewSession()
+		defer s.Close()
+		count, err := s.Where("delivery_id = ?", record.DeliveryID).Count(&WebhookDeliveryRecord{})
+		if err != nil {
+			queries <- -1
+			return
+		}
+		queries <- int(count)
+	}()
+
+	select {
+	case count := <-queries:
+		assert.Equal(t, 1, count)
+	case <-time.After(2 * time.Second):
+		t.Fatal("database was locked while the HTTP request was in flight")
+	}
+
+	close(release)
+	select {
+	case result := <-resultCh:
+		assert.Equal(t, "delivered", result.Status)
+	case <-time.After(5 * time.Second):
+		t.Fatal("driver did not finish")
+	}
+}
