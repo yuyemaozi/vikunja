@@ -635,6 +635,35 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 		assert.Contains(t, out, expectedFallbackWarning(11))
 		assert.Equal(t, 1, strings.Count(out, fallbackWarningMarker))
 	})
+	t.Run("miss then hit", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		logged := captureWarnings(t)
+
+		cl := &claims{
+			Email:             "user11@example.com",
+			EmailVerified:     true,
+			PreferredUsername: "nobody",
+		}
+		provider := &Provider{
+			Key:              "test",
+			UsernameFallback: true,
+			EmailFallback:    true,
+		}
+		idToken := &oidc.IDToken{
+			Issuer:  "https://some.issuer",
+			Subject: "nobody-subject",
+		}
+
+		u, err := getOrCreateUser(s, cl, provider, idToken)
+		require.NoError(t, err)
+		require.Equal(t, int64(11), u.ID)
+
+		out := logged()
+		assert.Contains(t, out, expectedFallbackWarning(11))
+		assert.Equal(t, 1, strings.Count(out, fallbackWarningMarker))
+	})
 	t.Run("no fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
