@@ -233,11 +233,18 @@ func ClaimWebhookDeliveryForRecovery(s *xorm.Session, deliveryID string) (bool, 
 // RecoverableWebhookDeliveries lists pending rows older than the cutoff.
 func RecoverableWebhookDeliveries(
 	s *xorm.Session,
-	olderThan time.Time,
+	now time.Time,
+	limit int,
 ) ([]*WebhookDeliveryRecord, error) {
 	records := make([]*WebhookDeliveryRecord, 0)
-	err := s.Where("status = ? AND created_at < ?", WebhookDeliveryStatusPending, olderThan).
+	err := s.Where(
+		"(status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "+
+			"OR (status = ? AND lease_until <= ?)",
+		WebhookDeliveryStatusPending, now,
+		WebhookDeliveryStatusProcessing, now,
+	).
 		OrderBy("created_at ASC, id ASC").
+		Limit(limit).
 		Find(&records)
 	return records, err
 }

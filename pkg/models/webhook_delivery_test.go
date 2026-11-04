@@ -236,3 +236,35 @@ func TestMarkWebhookDeliveryPoisonedAndRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, retriedAgain)
 }
+
+func TestRecoverableWebhookDeliveriesSelectsDueAndExpired(t *testing.T) {
+	webhook := newTestWebhook(t, "https://example.com/hook")
+	now := time.Now().UTC()
+	past := now.Add(-time.Minute)
+	future := now.Add(time.Hour)
+
+	records := []*WebhookDeliveryRecord{
+		{DeliveryID: "018f8f4c-2e18-7b61-9a50-9c4f5de4e401", WebhookID: webhook.ID, EventName: "task.updated", Payload: &WebhookPayload{}, Status: WebhookDeliveryStatusPending, NextAttemptAt: &past},
+		{DeliveryID: "018f8f4c-2e18-7b61-9a50-9c4f5de4e402", WebhookID: webhook.ID, EventName: "task.updated", Payload: &WebhookPayload{}, Status: WebhookDeliveryStatusPending, NextAttemptAt: &future},
+		{DeliveryID: "018f8f4c-2e18-7b61-9a50-9c4f5de4e403", WebhookID: webhook.ID, EventName: "task.updated", Payload: &WebhookPayload{}, Status: WebhookDeliveryStatusProcessing, LeaseUntil: &past},
+	}
+	s := db.NewSession()
+	for _, record := range records {
+		_, err := s.Insert(record)
+		require.NoError(t, err)
+	}
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	s = db.NewSession()
+	defer s.Close()
+	recovered, err := RecoverableWebhookDeliveries(s, now, 10)
+	require.NoError(t, err)
+	ids := map[string]bool{}
+	for _, record := range recovered {
+		ids[record.DeliveryID] = true
+	}
+	assert.True(t, ids[records[0].DeliveryID])
+	assert.False(t, ids[records[1].DeliveryID])
+	assert.True(t, ids[records[2].DeliveryID])
+}

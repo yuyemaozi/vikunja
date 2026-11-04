@@ -80,17 +80,22 @@ var webhookDeliveriesRecoverCmd = &cobra.Command{
 		initialize.FullInitWithoutAsync()
 	},
 	Run: func(_ *cobra.Command, _ []string) {
+		if webhookDeliveriesRecoverLimit < 1 || webhookDeliveriesRecoverLimit > 1000 {
+			fmt.Fprintln(os.Stderr, "limit must be between 1 and 1000")
+			os.Exit(2)
+		}
+		if webhookDeliveriesRecoverTimeout < 1 || webhookDeliveriesRecoverTimeout > 3600 {
+			fmt.Fprintln(os.Stderr, "timeout must be between 1 and 3600 seconds")
+			os.Exit(2)
+		}
+
 		s := db.NewAutocommitSession()
-		records, err := models.RecoverableWebhookDeliveries(s, time.Now().Add(-5*time.Minute))
+		records, err := models.RecoverableWebhookDeliveries(s, time.Now().UTC(), webhookDeliveriesRecoverLimit)
 		_ = s.Close()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Could not list pending webhook deliveries: %v\n", err)
 			os.Exit(1)
 		}
-		if len(records) > webhookDeliveriesRecoverLimit {
-			records = records[:webhookDeliveriesRecoverLimit]
-		}
-
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(webhookDeliveriesRecoverTimeout)*time.Second)
 		defer cancel()
 
