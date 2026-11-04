@@ -77,22 +77,26 @@ func resetTransactionalSinks() {
 	transactionalSinks.sinks = map[string]TransactionalSink{}
 }
 
-// BindRequestMeta stores the first valid request UUID for a pending transaction.
+// BindRequestMeta stores the first request UUID for a pending transaction.
+// Missing or invalid metadata produces one transaction UUID; later bindings
+// never replace it.
 func BindRequestMeta(key any, ctx context.Context) {
-	meta := RequestMetaFromContext(ctx)
-	if meta == nil || meta.RequestID == "" {
-		return
-	}
-	parsed, err := uuid.Parse(meta.RequestID)
-	if err != nil {
-		return
-	}
 	queue := pendingQueue(key)
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	if queue.requestID == "" {
-		queue.requestID = parsed.String()
+	if queue.requestID != "" {
+		return
 	}
+	requestID := ""
+	if meta := RequestMetaFromContext(ctx); meta != nil {
+		if parsed, err := uuid.Parse(meta.RequestID); err == nil {
+			requestID = parsed.String()
+		}
+	}
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+	queue.requestID = requestID
 }
 
 func isTransactionalKey(key any) bool {

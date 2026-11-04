@@ -329,6 +329,10 @@ func DispatchOnCommit(key any, event Event) error {
 	queue := pendingQueue(key)
 	queue.mu.Lock()
 	requestID := queue.requestID
+	if requestID == "" {
+		requestID = uuid.NewString()
+		queue.requestID = requestID
+	}
 	queue.mu.Unlock()
 
 	followUps, err := sink(

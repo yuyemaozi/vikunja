@@ -95,6 +95,9 @@ func StageWebhookDeliveries(
 	prepared events.PreparedEvent,
 	requestID string,
 ) ([]events.Event, error) {
+	if _, err := uuid.Parse(requestID); err != nil {
+		return nil, fmt.Errorf("webhook snapshot requires a valid request id")
+	}
 	var event map[string]interface{}
 	if err := decodeEventPayload(prepared.Payload, &event); err != nil {
 		return nil, err

@@ -19,6 +19,7 @@ package middleware
 import (
 	"code.vikunja.io/api/pkg/events"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 )
 
@@ -30,10 +31,17 @@ func RequestMeta() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
 			req := c.Request()
+			requestID := c.Response().Header().Get(echo.HeaderXRequestID)
+			if parsed, err := uuid.Parse(requestID); err == nil {
+				requestID = parsed.String()
+			} else {
+				requestID = uuid.NewString()
+			}
+			c.Response().Header().Set(echo.HeaderXRequestID, requestID)
 			ctx := events.WithRequestMeta(req.Context(), &events.RequestMeta{
 				IP:        c.RealIP(),
 				UserAgent: req.UserAgent(),
-				RequestID: c.Response().Header().Get(echo.HeaderXRequestID),
+				RequestID: requestID,
 			})
 			c.SetRequest(req.WithContext(ctx))
 			return next(c)

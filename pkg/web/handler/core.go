@@ -30,6 +30,8 @@ import (
 // Caller is responsible for body/path binding and validation before calling.
 func DoCreate(ctx context.Context, obj CObject, a web.Auth) error {
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer func() {
 		if err := s.Close(); err != nil {
 			log.Errorf("Could not close session: %s", err)
@@ -137,6 +139,8 @@ func DoReadAll(ctx context.Context, obj CObject, a web.Auth, search string, page
 // and validation before calling.
 func DoUpdate(ctx context.Context, obj CObject, a web.Auth) error {
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer func() {
 		if err := s.Close(); err != nil {
 			log.Errorf("Could not close session: %s", err)
@@ -176,6 +180,8 @@ func DoUpdate(ctx context.Context, obj CObject, a web.Auth) error {
 // calling.
 func DoDelete(ctx context.Context, obj CObject, a web.Auth) error {
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer func() {
 		if err := s.Close(); err != nil {
 			log.Errorf("Could not close session: %s", err)

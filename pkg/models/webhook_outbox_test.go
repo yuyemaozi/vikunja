@@ -122,3 +122,22 @@ func TestWebhookSinkReadyWithoutAsync(t *testing.T) {
 	})
 	assert.ErrorIs(t, err, events.ErrWebhookTransactionRequired)
 }
+
+func TestNewOutboxRejectsInvalidRequestID(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	payload, err := json.Marshal(&TaskUpdatedEvent{
+		Task: &Task{ID: 1, ProjectID: 1},
+		Doer: &user.User{ID: 1},
+	})
+	require.NoError(t, err)
+
+	s := db.NewSession()
+	defer s.Close()
+	_, err = StageWebhookDeliveries(s, events.PreparedEvent{
+		ID:         "018f8f4c-2e18-7b61-9a50-9c4f5de4e10d",
+		Name:       "task.updated",
+		OccurredAt: time.Now().UTC(),
+		Payload:    payload,
+	}, "")
+	assert.Error(t, err)
+}
