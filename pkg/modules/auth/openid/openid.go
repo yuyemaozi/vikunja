@@ -468,6 +468,7 @@ func fallbackSearchUsers(cl *claims, provider *Provider, idToken *oidc.IDToken) 
 }
 
 func logFallbackDeprecation(provider *Provider, u *user.User) {
+	// Bot logins are refused anyway, so the "link the provider" advice doesn't apply.
 	if u.IsBot() {
 		return
 	}
