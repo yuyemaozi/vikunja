@@ -44,7 +44,6 @@ import (
 
 const mockIDPProviderKey = "provider1"
 
-// mockIDP is an OIDC provider issuing signed ID tokens with the claims set via setClaims.
 type mockIDP struct {
 	*httptest.Server
 	key    *rsa.PrivateKey
@@ -128,7 +127,6 @@ func (idp *mockIDP) currentClaims() map[string]any {
 	return out
 }
 
-// configure registers the IdP as the only OpenID provider, under mockIDPProviderKey.
 func (idp *mockIDP) configure(t *testing.T) {
 	t.Helper()
 	config.AuthOpenIDEnabled.Set(true)
@@ -299,8 +297,7 @@ func TestAuthenticateCallbackLinkedIdentity(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		idp := newMockIDP(t)
 		idp.configure(t)
-		// Own user and secret: the fixture TOTP of user 10 would mark its current
-		// passcode as used for the other TOTP tests in this package.
+		// Own TOTP user: user 10's fixture TOTP would mark its passcode used for other tests.
 		const secret = "KRSXG5CTMVRXEZLU"
 		s := db.NewSession()
 		_, err := s.Insert(&user.TOTP{
