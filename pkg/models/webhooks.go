@@ -120,9 +120,6 @@ func RegisterEventForWebhook(event events.Event) {
 	defer availableWebhookEventsLock.Unlock()
 
 	availableWebhookEvents[event.Name()] = true
-	events.RegisterListener(event.Name(), &WebhookListener{
-		EventName: event.Name(),
-	})
 }
 
 func GetAvailableWebhookEvents() []string {
