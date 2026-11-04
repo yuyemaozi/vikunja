@@ -1063,10 +1063,12 @@ func CreateProject(s *xorm.Session, project *Project, auth web.Auth, createBackl
 		}
 	}
 
-	events.DispatchOnCommit(s, &ProjectCreatedEvent{
+	if err := events.DispatchOnCommit(s, &ProjectCreatedEvent{
 		Project: project,
 		Doer:    doerFromAuth(s, auth),
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1277,10 +1279,12 @@ func UpdateProject(s *xorm.Session, project *Project, auth web.Auth, updateProje
 		}
 	}
 
-	events.DispatchOnCommit(s, &ProjectUpdatedEvent{
+	if err := events.DispatchOnCommit(s, &ProjectUpdatedEvent{
 		Project: project,
 		Doer:    doerFromAuth(s, auth),
-	})
+	}); err != nil {
+		return err
+	}
 
 	l, err := GetProjectSimpleByID(s, project.ID)
 	if err != nil {
@@ -1551,10 +1555,12 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 		return
 	}
 
-	events.DispatchOnCommit(s, &ProjectDeletedEvent{
+	if err := events.DispatchOnCommit(s, &ProjectDeletedEvent{
 		Project: fullProject,
 		Doer:    doerFromAuth(s, a),
-	})
+	}); err != nil {
+		return err
+	}
 
 	childProjects := []*Project{}
 	err = s.Where("parent_project_id = ?", fullProject.ID).Find(&childProjects)

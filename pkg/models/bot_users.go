@@ -124,12 +124,14 @@ func (b *BotUser) Update(s *xorm.Session, a web.Auth) error {
 		return err
 	}
 	if existing.Status != oldStatus {
-		events.DispatchOnCommit(s, &BotStatusChangedEvent{
+		if err := events.DispatchOnCommit(s, &BotStatusChangedEvent{
 			Bot:       existing,
 			Doer:      doer,
 			OldStatus: oldStatus,
 			NewStatus: existing.Status,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 	b.User = *existing
 	b.Status = &b.User.Status

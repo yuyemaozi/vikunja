@@ -240,7 +240,9 @@ func revokeSessions(s *xorm.Session, event *SessionsRevokedEvent) error {
 	if err := user.InvalidateSessionAuthCacheOnCommit(s, event.UserID); err != nil {
 		return err
 	}
-	events.DispatchOnCommit(s, event)
+	if err := events.DispatchOnCommit(s, event); err != nil {
+		return err
+	}
 	return nil
 }
 
