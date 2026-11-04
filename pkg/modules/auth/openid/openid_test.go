@@ -557,11 +557,13 @@ func TestGetOrCreateUser(t *testing.T) {
 }
 
 func captureWarnings(t *testing.T) func() string {
+	t.Helper()
 	dir := t.TempDir()
 	log.ConfigureStandardLogger(true, "file", dir, "WARNING", "text")
 	t.Cleanup(log.InitLogger)
 
 	return func() string {
+		t.Helper()
 		content, err := os.ReadFile(filepath.Join(dir, "standard.log"))
 		require.NoError(t, err)
 		return string(content)
