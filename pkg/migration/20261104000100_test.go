@@ -49,13 +49,18 @@ func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
 	const backup = "webhook_deliveries_backup_20261104000100"
 	existed, err := x.IsTableExist("webhook_deliveries")
 	require.NoError(t, err)
+	sqlite := x.Dialect().URI().DBType == "sqlite3"
 	if existed {
-		_, renameErr := x.Exec("ALTER TABLE webhook_deliveries RENAME TO " + backup)
-		require.NoError(t, renameErr)
+		if sqlite {
+			require.NoError(t, x.DropTables(&legacyWebhookDelivery20261104000100{}))
+		} else {
+			_, renameErr := x.Exec("ALTER TABLE webhook_deliveries RENAME TO " + backup)
+			require.NoError(t, renameErr)
+		}
 	}
 	t.Cleanup(func() {
 		require.NoError(t, x.DropTables(&legacyWebhookDelivery20261104000100{}))
-		if existed {
+		if existed && !sqlite {
 			_, restoreErr := x.Exec("ALTER TABLE " + backup + " RENAME TO webhook_deliveries")
 			require.NoError(t, restoreErr)
 		}
