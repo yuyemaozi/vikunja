@@ -222,3 +222,53 @@ func TestTaskCreateRollsBackWhenSnapshotFails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, deliveryCount)
 }
+
+func TestProjectDeleteRollsBackWhenSnapshotFails(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+
+	s := db.NewSession()
+	defer s.Close()
+	for index := 0; index < 2; index++ {
+		webhook := &Webhook{
+			TargetURL:   "https://example.com/hook",
+			Events:      []string{"project.deleted"},
+			ProjectID:   1,
+			CreatedByID: 1,
+		}
+		_, err := s.Insert(webhook)
+		require.NoError(t, err)
+	}
+	events.BindRequestMeta(
+		s,
+		events.WithRequestMeta(context.Background(), &events.RequestMeta{
+			RequestID: "018f8f4c-2e18-7b61-9a50-9c4f5de4e50c",
+		}),
+	)
+	defer events.CleanupPending(s)
+
+	previous := insertDeliverySnapshot
+	calls := 0
+	insertDeliverySnapshot = func(session *xorm.Session, record *WebhookDeliveryRecord) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected snapshot failure")
+		}
+		return previous(session, record)
+	}
+	t.Cleanup(func() { insertDeliverySnapshot = previous })
+
+	project := &Project{ID: 1}
+	err := project.Delete(s, &user.User{ID: 1})
+	require.Error(t, err)
+	require.NoError(t, s.Rollback())
+
+	check := db.NewSession()
+	defer check.Close()
+	exists, err := check.ID(int64(1)).Exist(&Project{})
+	require.NoError(t, err)
+	assert.True(t, exists, "project must survive the rolled back delete")
+	deliveryCount, err := check.Where("event_name = ?", "project.deleted").Count(&WebhookDeliveryRecord{})
+	require.NoError(t, err)
+	assert.Zero(t, deliveryCount)
+}
