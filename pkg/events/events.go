@@ -35,6 +35,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
+	"github.com/google/uuid"
 )
 
 var pubsub *gochannel.GoChannel
@@ -294,6 +295,7 @@ type pendingEventQueue struct {
 	mu        sync.Mutex
 	events    []Event
 	callbacks []func() error
+	requestID string
 }
 
 var pendingEvents sync.Map // map[any]*pendingEventQueue
@@ -307,11 +309,47 @@ func pendingQueue(key any) *pendingEventQueue {
 // The key should be the *xorm.Session pointer associated with the transaction.
 // Call DispatchPending(key) after s.Commit() to actually dispatch the events.
 // Call CleanupPending(key) on rollback to discard them.
-func DispatchOnCommit(key any, event Event) {
+func DispatchOnCommit(key any, event Event) error {
+	sink, registered := lookupTransactionalSink(event.Name())
+	if !registered {
+		queue := pendingQueue(key)
+		queue.mu.Lock()
+		queue.events = append(queue.events, event)
+		queue.mu.Unlock()
+		return nil
+	}
+	if !isTransactionalKey(key) {
+		return ErrWebhookTransactionRequired
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
 	queue := pendingQueue(key)
 	queue.mu.Lock()
-	queue.events = append(queue.events, event)
+	requestID := queue.requestID
 	queue.mu.Unlock()
+
+	followUps, err := sink(
+		key,
+		PreparedEvent{
+			ID:         uuid.NewString(),
+			Name:       event.Name(),
+			OccurredAt: time.Now().UTC(),
+			Payload:    payload,
+		},
+		RequestMeta{RequestID: requestID},
+	)
+	if err != nil {
+		return err
+	}
+
+	queue.mu.Lock()
+	queue.events = append(queue.events, event)
+	queue.events = append(queue.events, followUps...)
+	queue.mu.Unlock()
+	return nil
 }
 
 // OnCommit registers fn to run synchronously in DispatchPending(key), before the pending
