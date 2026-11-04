@@ -66,9 +66,16 @@ var webhookDeliveriesListCmd = &cobra.Command{
 	},
 }
 
+var (
+	webhookDeliveriesRecoverLimit   int
+	webhookDeliveriesRecoverTimeout int
+	webhookDeliveriesRecoverFormat  string
+)
+
 var webhookDeliveriesRecoverCmd = &cobra.Command{
-	Use:   "recover",
-	Short: "Claim and deliver pending webhook deliveries older than a cutoff",
+	Use:     "recover-pending",
+	Aliases: []string{"recover"},
+	Short:   "Claim and deliver stranded pending webhook deliveries",
 	PreRun: func(_ *cobra.Command, _ []string) {
 		initialize.FullInitWithoutAsync()
 	},
@@ -80,15 +87,47 @@ var webhookDeliveriesRecoverCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Could not list pending webhook deliveries: %v\n", err)
 			os.Exit(1)
 		}
+		if len(records) > webhookDeliveriesRecoverLimit {
+			records = records[:webhookDeliveriesRecoverLimit]
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(webhookDeliveriesRecoverTimeout)*time.Second)
+		defer cancel()
+
+		items := make([]map[string]any, 0, len(records))
 		failures := 0
 		for _, record := range records {
-			result := models.RunWebhookDelivery(context.Background(), record.DeliveryID, models.DeliveryModeRecover)
+			result := models.RunWebhookDelivery(ctx, record.DeliveryID, models.DeliveryModeRecover)
 			if result.Status == "error" || result.Status == "failed" {
 				failures++
-				fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", record.DeliveryID, result.Status)
-				continue
 			}
-			fmt.Printf("Webhook delivery %s %s\n", record.DeliveryID, result.Status)
+			item := map[string]any{
+				"delivery_id": record.DeliveryID,
+				"status":      result.Status,
+			}
+			if result.ErrorCode != "" {
+				item["error_code"] = result.ErrorCode
+			}
+			items = append(items, item)
+		}
+
+		if webhookDeliveriesRecoverFormat == "json" {
+			payload, err := json.Marshal(map[string]any{
+				"summary": map[string]int{
+					"requested": len(records),
+					"errors":    failures,
+				},
+				"items": items,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Could not encode recovery result: %v\n", err)
+				os.Exit(1)
+			}
+			_, _ = fmt.Fprintln(os.Stdout, string(payload))
+		} else {
+			for _, item := range items {
+				fmt.Printf("Webhook delivery %s %s\n", item["delivery_id"], item["status"])
+			}
 		}
 		if failures > 0 {
 			os.Exit(1)
@@ -131,6 +170,9 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 }
 
 func init() {
+	webhookDeliveriesRecoverCmd.Flags().IntVar(&webhookDeliveriesRecoverLimit, "limit", 100, "maximum deliveries in this batch (1-1000)")
+	webhookDeliveriesRecoverCmd.Flags().IntVar(&webhookDeliveriesRecoverTimeout, "timeout", 300, "batch timeout in seconds (1-3600)")
+	webhookDeliveriesRecoverCmd.Flags().StringVar(&webhookDeliveriesRecoverFormat, "format", "table", "output format: table or json")
 	webhookDeliveriesRetryCmd.Flags().StringVar(
 		&webhookDeliveriesRetryFormat,
 		"format",
