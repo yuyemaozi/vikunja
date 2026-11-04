@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
+	echomiddleware "github.com/labstack/echo/v5/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,4 +78,24 @@ func TestRequestMetaNormalizesUUID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRequestMetaKeepsEchoRequestID(t *testing.T) {
+	const supplied = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b"
+	e := echo.New()
+	e.Use(echomiddleware.RequestID())
+	e.Use(RequestMeta())
+	e.GET("/", func(c *echo.Context) error {
+		meta := events.RequestMetaFromContext(c.Request().Context())
+		require.NotNil(t, meta)
+		return c.String(http.StatusOK, meta.RequestID)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set(echo.HeaderXRequestID, supplied)
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, request)
+
+	assert.Equal(t, supplied, recorder.Body.String())
+	assert.Equal(t, supplied, recorder.Header().Get(echo.HeaderXRequestID))
 }
