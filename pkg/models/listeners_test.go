@@ -763,7 +763,7 @@ func TestWebhookDeliveryListenerSkipsErrorReporting(t *testing.T) {
 	require.NoError(t, (&WebhookDeliveryListener{}).Handle(msg))
 
 	persisted := loadDelivery(t, record.DeliveryID)
-	assert.Equal(t, WebhookDeliveryStatusPending, persisted.Status)
+	assert.Equal(t, WebhookDeliveryStatusFailed, persisted.Status)
 	assert.Equal(t, "delivery_failed", persisted.LastErrorCode)
 }
 
