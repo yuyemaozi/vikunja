@@ -49,6 +49,13 @@ const navigationItems = computed(() => {
 			condition: configStore.totp_enabled && isLocalUser.value,
 		},
 		{
+			title: t('user.settings.linkedAccounts.title'),
+			routeName: 'user.settings.linked-accounts',
+			condition: configStore.auth.openid_connect.enabled
+				&& configStore.auth.openid_connect.providers.length > 0
+				&& isLocalUser.value,
+		},
+		{
 			title: t('user.export.title'),
 			routeName: 'user.settings.data-export',
 		},
