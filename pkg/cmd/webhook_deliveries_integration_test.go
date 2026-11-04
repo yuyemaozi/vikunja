@@ -20,10 +20,13 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +56,7 @@ func runCLI(t *testing.T, binary string, databasePath string, arguments ...strin
 		"VIKUNJA_SERVICE_PUBLICURL=http://127.0.0.1:3456/",
 		"VIKUNJA_DATABASE_TYPE=sqlite",
 		"VIKUNJA_DATABASE_PATH="+databasePath,
+		"VIKUNJA_OUTGOINGREQUESTS_ALLOWNONROUTABLEIPS=true",
 	)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -101,6 +105,34 @@ func TestWebhookCLIExitMatrix(t *testing.T) {
 
 	code, _ = runCLI(t, binary, databasePath, "webhook-deliveries", "retry", busyID, "--format", "json")
 	assert.Equal(t, 2, code, "a valid lease must exit 2")
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	database, err = sql.Open("sqlite3", databasePath)
+	require.NoError(t, err)
+	_, err = database.Exec(
+		"INSERT INTO webhooks (id, target_url, events, project_id, created_by_id, created, updated) "+
+			`VALUES (1, ?, '["task.updated"]', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		server.URL,
+	)
+	require.NoError(t, err)
+	const failingID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10a"
+	_, err = database.Exec(
+		"INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_name, payload, status, retry_generation, cycle_attempt_count, created_at) "+
+			`VALUES (?, 1, 'task.updated', '{"event_name":"task.updated","time":"2026-11-04T00:00:00Z","data":{}}', 'failed', 0, 6, CURRENT_TIMESTAMP)`,
+		failingID,
+	)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	code, _ = runCLI(t, binary, databasePath, "webhook-deliveries", "retry", failingID, "--format", "json")
+	assert.Equal(t, 1, code)
+	assert.EqualValues(t, 6, requests.Load())
 
 	code, stdout := runCLI(t, binary, databasePath, "webhook-deliveries", "recover-pending", "--format", "json", "--limit", "1")
 	assert.Equal(t, 0, code)
