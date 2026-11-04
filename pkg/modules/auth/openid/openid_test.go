@@ -664,6 +664,27 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 		assert.Contains(t, out, expectedFallbackWarning(11))
 		assert.Equal(t, 1, strings.Count(out, fallbackWarningMarker))
 	})
+	t.Run("disabled user fallback match", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+		logged := captureWarnings(t)
+
+		provider := &Provider{
+			Key:              "test",
+			UsernameFallback: true,
+		}
+		idToken := &oidc.IDToken{
+			Issuer:  "https://some.issuer",
+			Subject: "user17",
+		}
+
+		u, err := getOrCreateUser(s, &claims{}, provider, idToken)
+		require.NoError(t, err)
+		require.Equal(t, int64(17), u.ID)
+
+		assert.Contains(t, logged(), "matched local user 17 via the deprecated")
+	})
 	t.Run("no fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
