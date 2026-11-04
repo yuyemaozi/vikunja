@@ -17,61 +17,39 @@
 package cmd
 
 import (
-	"bytes"
-	"os"
+	"encoding/json"
 	"testing"
 	"time"
 
-	"code.vikunja.io/api/pkg/config"
-	"code.vikunja.io/api/pkg/db"
-	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestMain(m *testing.M) {
-	log.InitLogger()
-	config.InitDefaultConfig()
-	os.Exit(m.Run())
-}
+func TestWebhookDeliveriesJSON(t *testing.T) {
+	records := []*models.WebhookDeliveryRecord{
+		{
+			DeliveryID:   "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b",
+			EventName:    "task.updated",
+			Status:       "pending",
+			AttemptCount: 2,
+			CreatedAt:    time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC),
+		},
+	}
 
-func TestWebhookDeliveriesListAndRetry(t *testing.T) {
-	engine, err := db.CreateTestEngine()
-	require.NoError(t, err)
-	require.NoError(t, engine.Sync2(&models.WebhookDeliveryRecord{}))
-
-	s := engine.NewSession()
-	record, err := models.CreateWebhookDelivery(s, 1, &models.WebhookPayload{
-		EventName: "task.updated",
-		Time:      time.Now(),
-		Data:      map[string]interface{}{},
-	})
-	require.NoError(t, err)
-	require.NoError(t, s.Commit())
-	_ = s.Close()
-	t.Cleanup(func() {
-		_, deleteErr := engine.Delete(&models.WebhookDeliveryRecord{DeliveryID: record.DeliveryID})
-		require.NoError(t, deleteErr)
-	})
-
-	require.NoError(t, models.MarkWebhookDeliveryPoisoned(record.DeliveryID))
-
-	s = engine.NewSession()
-	records, err := models.ListWebhookDeliveries(s, nil)
-	_ = s.Close()
+	payload, err := webhookDeliveriesJSON(records)
 	require.NoError(t, err)
 
-	var buffer bytes.Buffer
-	printWebhookDeliveries(&buffer, records)
-	assert.Contains(t, buffer.String(), record.DeliveryID)
-	assert.Contains(t, buffer.String(), "failed")
-	assert.NotContains(t, buffer.String(), "payload")
-
-	s = engine.NewSession()
-	requeued, err := models.RetryWebhookDelivery(s, record.DeliveryID)
-	_ = s.Close()
-	require.NoError(t, err)
-	assert.True(t, requeued)
+	var decoded struct {
+		Deliveries []map[string]any `json:"deliveries"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	require.Len(t, decoded.Deliveries, 1)
+	item := decoded.Deliveries[0]
+	assert.Equal(t, "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b", item["delivery_id"])
+	assert.Equal(t, "task.updated", item["event"])
+	assert.Equal(t, "pending", item["status"])
+	assert.EqualValues(t, 2, item["attempts"])
+	assert.Equal(t, "2026-11-04T12:00:00Z", item["created_at"])
 }

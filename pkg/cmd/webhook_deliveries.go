@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,8 @@ var webhookDeliveriesCmd = &cobra.Command{
 	Short: "Inspect and retry durable webhook deliveries",
 }
 
+var webhookDeliveriesListFormat string
+
 var webhookDeliveriesListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List pending and failed webhook deliveries",
@@ -49,6 +52,15 @@ var webhookDeliveriesListCmd = &cobra.Command{
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Could not list webhook deliveries: %v\n", err)
 			os.Exit(1)
+		}
+		if webhookDeliveriesListFormat == "json" {
+			payload, err := webhookDeliveriesJSON(records)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Could not encode webhook deliveries: %v\n", err)
+				os.Exit(1)
+			}
+			_, _ = fmt.Fprintln(os.Stdout, string(payload))
+			return
 		}
 		printWebhookDeliveries(os.Stdout, records)
 	},
@@ -107,6 +119,12 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 }
 
 func init() {
+	webhookDeliveriesListCmd.Flags().StringVar(
+		&webhookDeliveriesListFormat,
+		"format",
+		"table",
+		"output format: table or json",
+	)
 	rootCmd.AddCommand(webhookDeliveriesCmd)
 	webhookDeliveriesCmd.AddCommand(webhookDeliveriesListCmd, webhookDeliveriesRetryCmd, webhookDeliveriesRecoverCmd)
 }
@@ -131,4 +149,33 @@ func printWebhookDeliveries(out io.Writer, records []*models.WebhookDeliveryReco
 		)
 	}
 	_ = w.Flush()
+}
+
+type webhookDeliveryJSON struct {
+	DeliveryID    string `json:"delivery_id"`
+	Event         string `json:"event"`
+	Status        string `json:"status"`
+	Attempts      int    `json:"attempts"`
+	CreatedAt     string `json:"created_at"`
+	LastAttemptAt string `json:"last_attempt_at,omitempty"`
+	LastErrorCode string `json:"last_error_code,omitempty"`
+}
+
+func webhookDeliveriesJSON(records []*models.WebhookDeliveryRecord) ([]byte, error) {
+	items := make([]webhookDeliveryJSON, 0, len(records))
+	for _, record := range records {
+		item := webhookDeliveryJSON{
+			DeliveryID:    record.DeliveryID,
+			Event:         record.EventName,
+			Status:        record.Status,
+			Attempts:      record.AttemptCount,
+			CreatedAt:     record.CreatedAt.UTC().Format(time.RFC3339),
+			LastErrorCode: record.LastErrorCode,
+		}
+		if record.LastAttemptAt != nil {
+			item.LastAttemptAt = record.LastAttemptAt.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	return json.Marshal(map[string]any{"deliveries": items})
 }
