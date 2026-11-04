@@ -96,6 +96,8 @@ var webhookDeliveriesRecoverCmd = &cobra.Command{
 	},
 }
 
+var webhookDeliveriesRetryFormat string
+
 var webhookDeliveriesRetryCmd = &cobra.Command{
 	Use:   "retry <delivery-id>",
 	Short: "Requeue one failed webhook delivery",
@@ -105,9 +107,19 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 	},
 	Run: func(_ *cobra.Command, args []string) {
 		result := models.RunWebhookDelivery(context.Background(), args[0], models.DeliveryModeRetry)
+		if webhookDeliveriesRetryFormat == "json" {
+			payload, err := deliveryResultJSON(result)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Could not encode delivery result: %v\n", err)
+				os.Exit(1)
+			}
+			_, _ = fmt.Fprintln(os.Stdout, string(payload))
+		}
 		switch result.Status {
 		case "delivered", "cancelled", "already_resolved":
-			fmt.Printf("Webhook delivery %s %s\n", args[0], result.Status)
+			if webhookDeliveriesRetryFormat != "json" {
+				fmt.Printf("Webhook delivery %s %s\n", args[0], result.Status)
+			}
 		case "not_found", "busy":
 			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", args[0], result.Status)
 			os.Exit(2)
@@ -119,6 +131,12 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 }
 
 func init() {
+	webhookDeliveriesRetryCmd.Flags().StringVar(
+		&webhookDeliveriesRetryFormat,
+		"format",
+		"table",
+		"output format: table or json",
+	)
 	webhookDeliveriesListCmd.Flags().StringVar(
 		&webhookDeliveriesListFormat,
 		"format",
@@ -178,4 +196,30 @@ func webhookDeliveriesJSON(records []*models.WebhookDeliveryRecord) ([]byte, err
 		items = append(items, item)
 	}
 	return json.Marshal(map[string]any{"deliveries": items})
+}
+
+func deliveryResultJSON(result models.DeliveryResult) ([]byte, error) {
+	item := map[string]any{
+		"delivery_id": result.DeliveryID,
+		"status":      result.Status,
+	}
+	if result.ErrorCode != "" {
+		item["error_code"] = result.ErrorCode
+	}
+	return json.Marshal(map[string]any{
+		"summary": map[string]any{
+			"requested": 1,
+			"delivered": boolToInt(result.Status == "delivered" || result.Status == "cancelled"),
+			"failed":    boolToInt(result.Status == "failed"),
+			"errors":    boolToInt(result.Status == "error"),
+		},
+		"items": []map[string]any{item},
+	})
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

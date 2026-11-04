@@ -53,3 +53,21 @@ func TestWebhookDeliveriesJSON(t *testing.T) {
 	assert.EqualValues(t, 2, item["attempts"])
 	assert.Equal(t, "2026-11-04T12:00:00Z", item["created_at"])
 }
+
+func TestDeliveryResultJSON(t *testing.T) {
+	payload, err := deliveryResultJSON(models.DeliveryResult{
+		DeliveryID: "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b",
+		Status:     "delivered",
+	})
+	require.NoError(t, err)
+
+	var decoded struct {
+		Summary map[string]int   `json:"summary"`
+		Items   []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	assert.Equal(t, 1, decoded.Summary["requested"])
+	assert.Equal(t, 1, decoded.Summary["delivered"])
+	require.Len(t, decoded.Items, 1)
+	assert.Equal(t, "delivered", decoded.Items[0]["status"])
+}
