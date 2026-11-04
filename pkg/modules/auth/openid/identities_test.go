@@ -80,15 +80,15 @@ func linkRequest(password string) *LinkIdentityRequest {
 	}
 }
 
-func runLink(t *testing.T, u *user.User, req *LinkIdentityRequest) (*LinkedIdentity, bool, error) {
+func runLink(t *testing.T, u *user.User, req *LinkIdentityRequest) (*LinkedIdentity, error) {
 	t.Helper()
 	s := db.NewSession()
 	defer s.Close()
-	identity, created, err := LinkIdentity(t.Context(), s, u, req)
+	identity, err := LinkIdentity(t.Context(), s, u, req)
 	if err == nil {
 		require.NoError(t, s.Commit())
 	}
-	return identity, created, err
+	return identity, err
 }
 
 func runUnlink(t *testing.T, u *user.User, identityID int64, password, passcode string) error {
@@ -110,10 +110,9 @@ func TestLinkIdentity(t *testing.T) {
 		idp.setClaims(map[string]any{"sub": "new-sub"})
 		u := loadIdentityTestUser(t, 2)
 
-		identity, created, err := runLink(t, u, linkRequest(identityTestPassword))
+		identity, err := runLink(t, u, linkRequest(identityTestPassword))
 		require.NoError(t, err)
 
-		assert.True(t, created)
 		assert.Equal(t, idp.URL, identity.Issuer)
 		assert.Equal(t, mockIDPProviderKey, identity.ProviderKey)
 		assert.Equal(t, "Provider One", identity.ProviderName)
@@ -131,7 +130,7 @@ func TestLinkIdentity(t *testing.T) {
 		idp.setClaims(map[string]any{"sub": "new-sub"})
 		u := loadIdentityTestUser(t, 2)
 
-		_, _, err := runLink(t, u, linkRequest("wrong"))
+		_, err := runLink(t, u, linkRequest("wrong"))
 		require.Error(t, err)
 
 		assert.True(t, user.IsErrWrongUsernameOrPassword(err), "unexpected error %v", err)
@@ -149,7 +148,7 @@ func TestLinkIdentity(t *testing.T) {
 			u := loadIdentityTestUser(t, 3)
 			enableTestTOTP(t, u.ID)
 
-			_, _, err := runLink(t, u, linkRequest(identityTestPassword))
+			_, err := runLink(t, u, linkRequest(identityTestPassword))
 			require.Error(t, err)
 
 			assert.True(t, user.IsErrInvalidTOTPPasscode(err), "unexpected error %v", err)
@@ -164,7 +163,7 @@ func TestLinkIdentity(t *testing.T) {
 
 			req := linkRequest(identityTestPassword)
 			req.TOTPPasscode = "000000"
-			_, _, err := runLink(t, u, req)
+			_, err := runLink(t, u, req)
 			require.Error(t, err)
 
 			assert.True(t, user.IsErrInvalidTOTPPasscode(err), "unexpected error %v", err)
@@ -183,9 +182,8 @@ func TestLinkIdentity(t *testing.T) {
 			require.NoError(t, err)
 			req := linkRequest(identityTestPassword)
 			req.TOTPPasscode = passcode
-			_, created, err := runLink(t, u, req)
+			_, err = runLink(t, u, req)
 			require.NoError(t, err)
-			assert.True(t, created)
 		})
 	})
 	t.Run("refuses an identity linked to another user", func(t *testing.T) {
@@ -196,7 +194,7 @@ func TestLinkIdentity(t *testing.T) {
 		idp.setClaims(map[string]any{"sub": "taken-sub"})
 		u := loadIdentityTestUser(t, 2)
 
-		_, _, err := runLink(t, u, linkRequest(identityTestPassword))
+		_, err := runLink(t, u, linkRequest(identityTestPassword))
 		require.Error(t, err)
 
 		assert.True(t, models.IsErrUserIdentityLinkedToOtherUser(err), "unexpected error %v", err)
@@ -222,7 +220,7 @@ func TestLinkIdentity(t *testing.T) {
 		idp.setClaims(map[string]any{"sub": "oidc-created"})
 		u := loadIdentityTestUser(t, 2)
 
-		_, _, err = runLink(t, u, linkRequest(identityTestPassword))
+		_, err = runLink(t, u, linkRequest(identityTestPassword))
 		require.Error(t, err)
 
 		assert.True(t, models.IsErrUserIdentityLinkedToOtherUser(err), "unexpected error %v", err)
@@ -235,7 +233,7 @@ func TestLinkIdentity(t *testing.T) {
 		idp.setClaims(map[string]any{"sub": "second-sub"})
 		u := loadIdentityTestUser(t, 2)
 
-		_, _, err := runLink(t, u, linkRequest(identityTestPassword))
+		_, err := runLink(t, u, linkRequest(identityTestPassword))
 		require.Error(t, err)
 
 		assert.True(t, models.IsErrUserIdentityProviderAlreadyLinked(err), "unexpected error %v", err)
@@ -250,15 +248,18 @@ func TestLinkIdentity(t *testing.T) {
 		idp.setClaims(map[string]any{"sub": "own-sub"})
 		u := loadIdentityTestUser(t, 2)
 
-		first, created, err := runLink(t, u, linkRequest(identityTestPassword))
-		require.NoError(t, err)
-		require.True(t, created)
-
-		second, created, err := runLink(t, u, linkRequest(identityTestPassword))
+		first, err := runLink(t, u, linkRequest(identityTestPassword))
 		require.NoError(t, err)
 
-		assert.False(t, created)
+		second, err := runLink(t, u, linkRequest(identityTestPassword))
+		require.NoError(t, err)
+
 		assert.Equal(t, first.ID, second.ID)
+		s := db.NewSession()
+		defer s.Close()
+		count, err := s.Where("user_id = ?", u.ID).Count(&models.UserIdentity{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), count)
 		assert.Equal(t, mockIDPProviderKey, second.ProviderKey)
 	})
 }

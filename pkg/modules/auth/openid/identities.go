@@ -62,16 +62,16 @@ func reauthenticate(ctx context.Context, s *xorm.Session, u *user.User, password
 }
 
 // LinkIdentity reauthenticates u, exchanges the code and links the resulting
-// identity. created is false when the identity was already linked to u.
-func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkIdentityRequest) (identity *LinkedIdentity, created bool, err error) {
+// identity. An identity already linked to u is returned unchanged.
+func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkIdentityRequest) (*LinkedIdentity, error) {
 	// Before the exchange: the code is single-use, so a typo must not burn it.
 	if err := reauthenticate(ctx, s, u, req.Password, req.TOTPPasscode); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	// Not across the IdP round trips: SQLite would fail the later write upgrade, others would check a stale snapshot.
 	if err := s.Rollback(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	provider, _, idToken, _, err := exchangeOidcTokens(ctx, &Callback{
@@ -79,42 +79,42 @@ func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkI
 		RedirectURL: req.RedirectURL,
 	}, req.Provider)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	if err := s.Begin(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	existing, found, err := models.GetUserIdentityByIssuerAndSubject(s, idToken.Issuer, idToken.Subject)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if found {
 		if existing.UserID != u.ID {
-			return nil, false, &models.ErrUserIdentityLinkedToOtherUser{Issuer: idToken.Issuer}
+			return nil, &models.ErrUserIdentityLinkedToOtherUser{Issuer: idToken.Issuer}
 		}
-		return withProvider(existing, provider), false, nil
+		return withProvider(existing, provider), nil
 	}
 
 	ownedByOIDCUser, err := s.
 		Where("issuer = ? AND subject = ?", idToken.Issuer, idToken.Subject).
 		Exist(&user.User{})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if ownedByOIDCUser {
-		return nil, false, &models.ErrUserIdentityLinkedToOtherUser{Issuer: idToken.Issuer}
+		return nil, &models.ErrUserIdentityLinkedToOtherUser{Issuer: idToken.Issuer}
 	}
 
 	hasIssuer, err := s.
 		Where("user_id = ? AND issuer = ?", u.ID, idToken.Issuer).
 		Exist(&models.UserIdentity{})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if hasIssuer {
-		return nil, false, &models.ErrUserIdentityProviderAlreadyLinked{
+		return nil, &models.ErrUserIdentityProviderAlreadyLinked{
 			UserID: u.ID,
 			Issuer: idToken.Issuer,
 		}
@@ -126,10 +126,10 @@ func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkI
 		Subject: idToken.Subject,
 	}
 	if _, err := s.Insert(newIdentity); err != nil {
-		return nil, false, fmt.Errorf("inserting user identity: %w", err)
+		return nil, fmt.Errorf("inserting user identity: %w", err)
 	}
 
-	return withProvider(newIdentity, provider), true, nil
+	return withProvider(newIdentity, provider), nil
 }
 
 // UnlinkIdentity reauthenticates u and removes one of u's identities.

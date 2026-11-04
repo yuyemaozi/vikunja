@@ -19,7 +19,6 @@ package apiv2
 import (
 	"context"
 	"net/http"
-	"reflect"
 
 	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/modules/auth/openid"
@@ -29,11 +28,6 @@ import (
 
 type userIdentityListBody struct {
 	Body Paginated[*openid.LinkedIdentity]
-}
-
-type userIdentityLinkResponse struct {
-	Status int
-	Body   *openid.LinkedIdentity
 }
 
 func init() { AddRouteRegistrar(RegisterUserIdentityRoutes) }
@@ -57,21 +51,10 @@ func RegisterUserIdentityRoutes(api huma.API) {
 	Register(api, huma.Operation{
 		OperationID: "user-identities-link",
 		Summary:     "Link an identity",
-		Description: "Links the OpenID Connect identity behind an authorization code to the authenticated user, so they can log in through that provider. Requires the current password, plus a totp passcode when totp is enabled; failures count toward the account lockout and are throttled per user (429). These are checked before the code is exchanged, so a rejected attempt can be retried with the same code. Returns 200 with the existing identity if it is already linked to the user. Fails with 409 if the identity belongs to another user or the user already linked this provider. Local accounts only.",
+		Description: "Links the OpenID Connect identity behind an authorization code to the authenticated user, so they can log in through that provider. Requires the current password, plus a totp passcode when totp is enabled; failures count toward the account lockout and are throttled per user (429). These are checked before the code is exchanged, so a rejected attempt can be retried with the same code. Relinking an identity already linked to the user returns it unchanged. Fails with 409 if the identity belongs to another user or the user already linked this provider. Local accounts only.",
 		Method:      http.MethodPost,
 		Path:        "/user/settings/identities",
 		Tags:        tags,
-		Responses: map[string]*huma.Response{
-			"default": defaultErrorResponse(api),
-			"200": {
-				Description: "The identity was already linked to the user.",
-				Content: map[string]*huma.MediaType{
-					"application/json": {
-						Schema: api.OpenAPI().Components.Schemas.Schema(reflect.TypeOf(openid.LinkedIdentity{}), true, ""),
-					},
-				},
-			},
-		},
 	}, userIdentitiesLink)
 
 	Register(api, huma.Operation{
@@ -102,14 +85,14 @@ func userIdentitiesList(ctx context.Context, _ *struct{}) (*userIdentityListBody
 
 func userIdentitiesLink(ctx context.Context, in *struct {
 	Body openid.LinkIdentityRequest
-}) (*userIdentityLinkResponse, error) {
+}) (*singleBody[openid.LinkedIdentity], error) {
 	u, s, err := localUserFromCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
 
-	identity, created, err := openid.LinkIdentity(ctx, s, u, &in.Body)
+	identity, err := openid.LinkIdentity(ctx, s, u, &in.Body)
 	if err != nil {
 		_ = s.Rollback()
 		return nil, translateOpenIDError(err)
@@ -117,12 +100,7 @@ func userIdentitiesLink(ctx context.Context, in *struct {
 	if err := s.Commit(); err != nil {
 		return nil, translateDomainError(err)
 	}
-
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	return &userIdentityLinkResponse{Status: status, Body: identity}, nil
+	return &singleBody[openid.LinkedIdentity]{Body: identity}, nil
 }
 
 func userIdentitiesUnlink(ctx context.Context, in *struct {
