@@ -134,6 +134,39 @@ func TestWebhookCLIExitMatrix(t *testing.T) {
 	assert.Equal(t, 1, code)
 	assert.EqualValues(t, 6, requests.Load())
 
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer good.Close()
+
+	database, err = sql.Open("sqlite3", databasePath)
+	require.NoError(t, err)
+	_, err = database.Exec(
+		"INSERT INTO webhooks (id, target_url, events, project_id, created_by_id, created, updated) "+
+			`VALUES (2, ?, '["task.updated"]', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		good.URL,
+	)
+	require.NoError(t, err)
+	for index, webhookID := range []int{1, 2} {
+		_, err = database.Exec(
+			"INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_name, payload, status, retry_generation, cycle_attempt_count, created_at) "+
+				`VALUES (?, ?, 'task.updated', '{"event_name":"task.updated","time":"2026-11-04T00:00:00Z","data":{}}', 'pending', 0, 0, datetime('now','-10 minutes'))`,
+			"018f8f4c-2e18-7b61-9a50-9c4f5de4e20"+string(rune('0'+index)),
+			webhookID,
+		)
+		require.NoError(t, err)
+	}
+	require.NoError(t, database.Close())
+
+	code, partialStdout := runCLI(t, binary, databasePath, "webhook-deliveries", "recover-pending", "--format", "json")
+	assert.Equal(t, 1, code)
+	var partial struct {
+		Summary map[string]int `json:"summary"`
+	}
+	require.NoError(t, json.Unmarshal(lastJSONLine(t, partialStdout), &partial))
+	assert.Equal(t, 2, partial.Summary["requested"])
+	assert.Equal(t, 1, partial.Summary["errors"])
+
 	code, stdout := runCLI(t, binary, databasePath, "webhook-deliveries", "recover-pending", "--format", "json", "--limit", "1")
 	assert.Equal(t, 0, code)
 	var payload struct {
