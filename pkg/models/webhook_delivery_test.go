@@ -258,7 +258,7 @@ func TestRecoverableWebhookDeliveriesSelectsDueAndExpired(t *testing.T) {
 
 	s = db.NewSession()
 	defer s.Close()
-	recovered, err := RecoverableWebhookDeliveries(s, now, 10)
+	recovered, err := RecoverableWebhookDeliveries(s, now, 1000)
 	require.NoError(t, err)
 	ids := map[string]bool{}
 	for _, record := range recovered {
