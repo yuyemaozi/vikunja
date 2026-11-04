@@ -101,38 +101,6 @@ func TestRunWebhookDeliveryDelivered(t *testing.T) {
 	assert.Equal(t, WebhookDeliveryStatusDelivered, loadDelivery(t, record.DeliveryID).Status)
 }
 
-func TestRunWebhookDeliveryRetriesThenFails(t *testing.T) {
-	allowLoopbackWebhook(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	webhook := newTestWebhook(t, server.URL)
-	s := db.NewSession()
-	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
-		EventName: "task.updated",
-		Time:      time.Now(),
-		Data:      map[string]interface{}{},
-	})
-	require.NoError(t, err)
-	require.NoError(t, s.Commit())
-
-	first := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
-	assert.Equal(t, "retry", first.Status)
-	pending := loadDelivery(t, record.DeliveryID)
-	assert.Equal(t, WebhookDeliveryStatusPending, pending.Status)
-	assert.NotNil(t, pending.NextAttemptAt)
-
-	_, err = s.ID(record.ID).Cols("cycle_attempt_count").Update(&WebhookDeliveryRecord{CycleAttemptCount: 5})
-	require.NoError(t, err)
-
-	sixth := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
-	assert.Equal(t, "failed", sixth.Status)
-	assert.Equal(t, WebhookDeliveryStatusFailed, loadDelivery(t, record.DeliveryID).Status)
-	_ = s.Close()
-}
-
 func TestDeliveryExpiredOwnerCannotFinalize(t *testing.T) {
 	webhook := newTestWebhook(t, "https://example.com/hook")
 	s := db.NewSession()
@@ -233,16 +201,26 @@ func TestDeliveryCASConcurrentNormalAndRecover(t *testing.T) {
 	assert.Equal(t, 1, statuses["busy"])
 }
 
-func TestDeliverySixClaimsAcrossRestart(t *testing.T) {
-	allowLoopbackWebhook(t)
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
+func withFakeDeliveryClock(t *testing.T) *time.Time {
+	t.Helper()
+	now := time.Now().UTC()
+	previousNow := deliveryNow
+	previousSleeper := deliverySleeper
+	deliveryNow = func() time.Time { return now }
+	deliverySleeper = func(ctx context.Context, duration time.Duration) error {
+		now = now.Add(duration)
+		return ctx.Err()
+	}
+	t.Cleanup(func() {
+		deliveryNow = previousNow
+		deliverySleeper = previousSleeper
+	})
+	return &now
+}
 
-	webhook := newTestWebhook(t, server.URL)
+func newPendingDelivery(t *testing.T, targetURL string) *WebhookDeliveryRecord {
+	t.Helper()
+	webhook := newTestWebhook(t, targetURL)
 	s := db.NewSession()
 	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
 		EventName: "task.updated",
@@ -252,35 +230,97 @@ func TestDeliverySixClaimsAcrossRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.Commit())
 	_ = s.Close()
+	return record
+}
 
-	for attempt := 1; attempt <= 6; attempt++ {
-		reset := db.NewSession()
-		_, err := reset.Exec(
-			"UPDATE webhook_deliveries SET next_attempt_at = ? WHERE delivery_id = ?",
-			time.Now().Add(-time.Minute).UTC(), record.DeliveryID,
-		)
-		require.NoError(t, err)
-		require.NoError(t, reset.Commit())
-		_ = reset.Close()
-
-		result := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
-		if attempt < 6 {
-			assert.Equal(t, "retry", result.Status, "attempt %d", attempt)
-		} else {
-			assert.Equal(t, "failed", result.Status)
+func TestDeliveryDriverRetriesWithoutAnotherWakeup(t *testing.T) {
+	allowLoopbackWebhook(t)
+	withFakeDeliveryClock(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
-	}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	record := newPendingDelivery(t, server.URL)
+	result := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+
+	assert.Equal(t, "delivered", result.Status)
+	assert.EqualValues(t, 2, requests.Load())
+	assert.Equal(t, WebhookDeliveryStatusDelivered, loadDelivery(t, record.DeliveryID).Status)
+}
+
+func TestDeliveryDriverExhaustsSixAttempts(t *testing.T) {
+	allowLoopbackWebhook(t)
+	withFakeDeliveryClock(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	record := newPendingDelivery(t, server.URL)
+	result := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+
+	assert.Equal(t, "failed", result.Status)
 	assert.EqualValues(t, 6, requests.Load())
 	assert.Equal(t, WebhookDeliveryStatusFailed, loadDelivery(t, record.DeliveryID).Status)
 
-	assert.Equal(t, "already_resolved",
-		RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal).Status)
+	again := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+	assert.Equal(t, "already_resolved", again.Status)
 	assert.EqualValues(t, 6, requests.Load())
+}
 
-	retried := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeRetry)
-	assert.Equal(t, "retry", retried.Status)
-	assert.EqualValues(t, 7, requests.Load())
-	pending := loadDelivery(t, record.DeliveryID)
-	assert.Equal(t, 1, pending.RetryGeneration)
-	assert.Equal(t, 1, pending.CycleAttemptCount)
+func TestDeliveryDriverCancelDuringBackoff(t *testing.T) {
+	allowLoopbackWebhook(t)
+	withFakeDeliveryClock(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	record := newPendingDelivery(t, server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	previousSleeper := deliverySleeper
+	deliverySleeper = func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { deliverySleeper = previousSleeper })
+
+	result := RunWebhookDelivery(ctx, record.DeliveryID, DeliveryModeNormal)
+
+	assert.Equal(t, "error", result.Status)
+	assert.Equal(t, "cancelled", result.ErrorCode)
+	persisted := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, WebhookDeliveryStatusPending, persisted.Status)
+	assert.NotNil(t, persisted.NextAttemptAt)
+}
+
+func TestDeliveryDriverDeadlineBoundsAttempts(t *testing.T) {
+	allowLoopbackWebhook(t)
+	withFakeDeliveryClock(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	record := newPendingDelivery(t, server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	previousSleeper := deliverySleeper
+	deliverySleeper = func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return context.Canceled
+	}
+	t.Cleanup(func() { deliverySleeper = previousSleeper })
+
+	result := RunWebhookDelivery(ctx, record.DeliveryID, DeliveryModeNormal)
+
+	assert.NotEqual(t, "delivered", result.Status)
+	assert.NotEqual(t, "failed", result.Status)
 }

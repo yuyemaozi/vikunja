@@ -194,64 +194,105 @@ const (
 	deliveryMaxAttempt = 6
 )
 
-// RunWebhookDelivery claims, performs one HTTP attempt and persists its outcome.
+var deliverySleeper = func(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// RunWebhookDelivery runs one bounded retry cycle: claim, send outside the
+// transaction, persist the outcome, wait for the persisted retry time and
+// re-claim. It never holds a transaction while sending or sleeping.
 func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) DeliveryResult {
-	now := deliveryNow()
-	session := db.NewSession()
-	lease, result, err := ClaimWebhookDelivery(session, id, mode, now, deliveryLeaseTTL)
-	if err != nil {
-		_ = session.Close()
-		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
+	deadline := deliveryNow().Add(6*deliveryLeaseTTL + 10*time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
 	}
-	if result.Status != "processing" {
-		_ = session.Close()
-		return result
-	}
+	claimMode := mode
 
-	record := &WebhookDeliveryRecord{}
-	has, err := session.Where("delivery_id = ?", id).Get(record)
-	webhook := &Webhook{}
-	webhookFound := false
-	if has && err == nil {
-		webhookFound, err = session.Where("id = ?", record.WebhookID).Get(webhook)
-	}
-	if commitErr := session.Commit(); commitErr != nil {
-		err = commitErr
-	}
-	_ = session.Close()
-	if err != nil || !has {
-		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "read_failed"}
-	}
+	for {
+		if ctx.Err() != nil {
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "cancelled"}
+		}
+		now := deliveryNow()
+		if now.After(deadline) {
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "deadline"}
+		}
 
-	outcome := DeliveryOutcome{Kind: OutcomeDelivered}
-	if !webhookFound {
-		outcome = DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
-	} else if sendErr := webhook.sendWebhookPayloadWithRequestID(record.Payload, record.RequestID); sendErr != nil {
-		if lease.Attempt >= deliveryMaxAttempt {
-			outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
-		} else {
-			backoff := deliveryBackoff[min(lease.Attempt-1, len(deliveryBackoff)-1)]
-			retryAt := deliveryNow().Add(backoff)
-			outcome = DeliveryOutcome{
-				Kind:      OutcomeRetry,
-				ErrorCode: "delivery_failed",
-				RetryAt:   &retryAt,
+		session := db.NewSession()
+		lease, result, err := ClaimWebhookDelivery(session, id, claimMode, now, deliveryLeaseTTL)
+		if err != nil {
+			_ = session.Close()
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
+		}
+		if result.Status != "processing" {
+			_ = session.Close()
+			return result
+		}
+
+		record := &WebhookDeliveryRecord{}
+		has, err := session.Where("delivery_id = ?", id).Get(record)
+		webhook := &Webhook{}
+		webhookFound := false
+		if has && err == nil {
+			webhookFound, err = session.Where("id = ?", record.WebhookID).Get(webhook)
+		}
+		if commitErr := session.Commit(); commitErr != nil {
+			err = commitErr
+		}
+		_ = session.Close()
+		if err != nil || !has {
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "read_failed"}
+		}
+
+		outcome := DeliveryOutcome{Kind: OutcomeDelivered}
+		if !webhookFound {
+			outcome = DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
+		} else if sendErr := webhook.sendWebhookPayloadWithRequestID(record.Payload, record.RequestID); sendErr != nil {
+			if lease.Attempt >= deliveryMaxAttempt {
+				outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
+			} else {
+				backoff := deliveryBackoff[min(lease.Attempt-1, len(deliveryBackoff)-1)]
+				retryAt := deliveryNow().Add(backoff)
+				outcome = DeliveryOutcome{
+					Kind:      OutcomeRetry,
+					ErrorCode: "delivery_failed",
+					RetryAt:   &retryAt,
+				}
 			}
 		}
-	}
 
-	completeSession := db.NewSession()
-	completed, err := CompleteWebhookDelivery(completeSession, id, lease, deliveryNow(), outcome)
-	if err != nil || !completed {
+		completeSession := db.NewSession()
+		completed, err := CompleteWebhookDelivery(completeSession, id, lease, deliveryNow(), outcome)
+		if err != nil || !completed {
+			_ = completeSession.Close()
+			return DeliveryResult{DeliveryID: id, Status: "busy", ErrorCode: "lease_lost"}
+		}
+		if commitErr := completeSession.Commit(); commitErr != nil {
+			_ = completeSession.Close()
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
+		}
 		_ = completeSession.Close()
-		return DeliveryResult{DeliveryID: id, Status: "busy", ErrorCode: "lease_lost"}
+
+		switch outcome.Kind {
+		case OutcomeDelivered, OutcomeCancelled, OutcomeFailed:
+			return DeliveryResult{DeliveryID: id, Status: outcome.Kind, ErrorCode: outcome.ErrorCode}
+		}
+
+		wait := outcome.RetryAt.Sub(deliveryNow())
+		if err := deliverySleeper(ctx, wait); err != nil {
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "cancelled"}
+		}
+		claimMode = DeliveryModeNormal
 	}
-	if commitErr := completeSession.Commit(); commitErr != nil {
-		_ = completeSession.Close()
-		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
-	}
-	_ = completeSession.Close()
-	return DeliveryResult{DeliveryID: id, Status: outcome.Kind, ErrorCode: outcome.ErrorCode}
 }
 
 func min(a, b int) int {
