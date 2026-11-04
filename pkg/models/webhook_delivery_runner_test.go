@@ -17,6 +17,9 @@
 package models
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -69,4 +72,60 @@ func TestDeliveryTransitions(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, completed)
+}
+
+func TestRunWebhookDeliveryDelivered(t *testing.T) {
+	allowLoopbackWebhook(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	webhook := newTestWebhook(t, server.URL)
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	result := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+
+	assert.Equal(t, "delivered", result.Status)
+	assert.Equal(t, WebhookDeliveryStatusDelivered, loadDelivery(t, record.DeliveryID).Status)
+}
+
+func TestRunWebhookDeliveryRetriesThenFails(t *testing.T) {
+	allowLoopbackWebhook(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	webhook := newTestWebhook(t, server.URL)
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+
+	first := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+	assert.Equal(t, "retry", first.Status)
+	pending := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, WebhookDeliveryStatusPending, pending.Status)
+	assert.NotNil(t, pending.NextAttemptAt)
+
+	_, err = s.ID(record.ID).Cols("cycle_attempt_count").Update(&WebhookDeliveryRecord{CycleAttemptCount: 5})
+	require.NoError(t, err)
+
+	sixth := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+	assert.Equal(t, "failed", sixth.Status)
+	assert.Equal(t, WebhookDeliveryStatusFailed, loadDelivery(t, record.DeliveryID).Status)
+	_ = s.Close()
 }
