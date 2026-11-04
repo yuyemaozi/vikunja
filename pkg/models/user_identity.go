@@ -22,7 +22,7 @@ import (
 	"xorm.io/xorm"
 )
 
-// UserIdentity links an OIDC issuer/subject to a local user. Matching on Issuer, not the provider key, survives key renames.
+// Matched on Issuer, not the provider key, so key renames don't break links.
 type UserIdentity struct {
 	ID      int64     `xorm:"bigint autoincr not null unique pk" json:"id"`
 	UserID  int64     `xorm:"bigint not null unique(user_issuer)" json:"-"`

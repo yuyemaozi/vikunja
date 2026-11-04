@@ -213,7 +213,6 @@ func GetProvider(key string) (provider *Provider, err error) {
 	return
 }
 
-// FindProviderByIssuer returns nil when no configured provider has that issuer.
 func FindProviderByIssuer(providers []*Provider, issuer string) *Provider {
 	for _, provider := range providers {
 		providerIssuer, err := provider.Issuer()
