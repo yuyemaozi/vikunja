@@ -97,6 +97,11 @@ func FullInitWithoutAsync() {
 	// Set Engine
 	InitEngines()
 
+	// Register the transactional webhook outbox before any write path starts.
+	if err := models.RegisterWebhookOutbox(); err != nil {
+		log.Fatalf("Could not register webhook outbox: %s", err)
+	}
+
 	// Initialize license validation — funds ongoing development of Vikunja.
 	// See the package comment in pkg/license/license.go before removing.
 	license.Init()
