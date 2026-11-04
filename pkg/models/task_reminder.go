@@ -17,6 +17,7 @@
 package models
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -376,14 +377,13 @@ func sendDueReminders(s *xorm.Session, now time.Time, webhookEnabled bool) error
 		}
 
 		if webhookEnabled {
-			err = events.Dispatch(&TaskReminderFiredEvent{
+			if err = events.DispatchOnCommit(s, &TaskReminderFiredEvent{
 				Task:     n.Task,
 				User:     n.User,
 				Project:  n.Project,
 				Reminder: n.TaskReminder,
-			})
-			if err != nil {
-				log.Errorf("[Task Reminder Cron] Could not dispatch reminder event for task %d: %s", n.Task.ID, err)
+			}); err != nil {
+				return fmt.Errorf("could not stage reminder event for task %d: %w", n.Task.ID, err)
 			}
 		}
 
@@ -407,6 +407,8 @@ func RegisterReminderCron() {
 
 	err := cron.Schedule("* * * * *", func() {
 		s := db.NewSession()
+		events.BindRequestMeta(s, context.Background())
+		defer events.CleanupPending(s)
 		defer s.Close()
 
 		if err := sendDueReminders(s, time.Now(), webhookEnabled); err != nil {
@@ -417,6 +419,8 @@ func RegisterReminderCron() {
 
 		if err := s.Commit(); err != nil {
 			log.Errorf("[Task Reminder Cron] Could not commit: %s", err)
+		} else {
+			events.DispatchPending(context.Background(), s)
 		}
 	})
 	if err != nil {

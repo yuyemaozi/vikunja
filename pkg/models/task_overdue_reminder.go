@@ -17,6 +17,7 @@
 package models
 
 import (
+	"context"
 	"slices"
 	"time"
 
@@ -180,6 +181,8 @@ func RegisterOverdueReminderCron() {
 
 	err := cron.Schedule("* * * * *", func() {
 		s := db.NewSession()
+		events.BindRequestMeta(s, context.Background())
+		defer events.CleanupPending(s)
 		defer s.Close()
 
 		now := time.Now()
@@ -256,25 +259,27 @@ func RegisterOverdueReminderCron() {
 
 			if dispatchSingle {
 				for _, t := range tasks {
-					err = events.Dispatch(&TaskOverdueEvent{
+					if err = events.DispatchOnCommit(s, &TaskOverdueEvent{
 						Task:    t,
 						User:    ut.user,
 						Project: projects[t.ProjectID],
-					})
-					if err != nil {
-						log.Errorf("[Undone Overdue Tasks Reminder] Could not dispatch overdue event for task %d: %s", t.ID, err)
+					}); err != nil {
+						log.Errorf("[Undone Overdue Tasks Reminder] Could not stage overdue event for task %d: %s", t.ID, err)
+						_ = s.Rollback()
+						return
 					}
 				}
 			}
 
 			if dispatchBatch {
-				err = events.Dispatch(&TasksOverdueEvent{
+				if err = events.DispatchOnCommit(s, &TasksOverdueEvent{
 					Tasks:    tasks,
 					User:     ut.user,
 					Projects: projects,
-				})
-				if err != nil {
-					log.Errorf("[Undone Overdue Tasks Reminder] Could not dispatch batch overdue event for user %d: %s", ut.user.ID, err)
+				}); err != nil {
+					log.Errorf("[Undone Overdue Tasks Reminder] Could not stage batch overdue event for user %d: %s", ut.user.ID, err)
+					_ = s.Rollback()
+					return
 				}
 			}
 
@@ -283,6 +288,8 @@ func RegisterOverdueReminderCron() {
 
 		if err := s.Commit(); err != nil {
 			log.Errorf("[Undone Overdue Tasks Reminder] Could not commit: %s", err)
+		} else {
+			events.DispatchPending(context.Background(), s)
 		}
 	})
 	if err != nil {
