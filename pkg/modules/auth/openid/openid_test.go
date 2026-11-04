@@ -640,6 +640,36 @@ func TestGetOrCreateUser(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, usersBefore, usersAfter, "no new user should have been created")
 	})
+	t.Run("LinkedIdentity: identity of a deleted user fails instead of creating an account", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		_, err := s.Insert(&models.UserIdentity{
+			UserID:  9999,
+			Issuer:  "https://some.service.com",
+			Subject: "linked-orphan",
+		})
+		require.NoError(t, err)
+		usersBefore, err := s.Count(&user.User{})
+		require.NoError(t, err)
+
+		cl := &claims{
+			Email:             "idp-orphan@example.com",
+			EmailVerified:     true,
+			PreferredUsername: "idpOrphan",
+		}
+		idToken := &oidc.IDToken{Issuer: "https://some.service.com", Subject: "linked-orphan"}
+
+		u, linked, err := getOrCreateUser(s, cl, &Provider{}, idToken)
+		require.Error(t, err)
+		assert.True(t, user.IsErrUserDoesNotExist(err))
+		assert.False(t, linked)
+		assert.Nil(t, u)
+		usersAfter, err := s.Count(&user.User{})
+		require.NoError(t, err)
+		assert.Equal(t, usersBefore, usersAfter, "no new user should have been created")
+	})
 	t.Run("ProviderFallback: does not create a linked identity", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
