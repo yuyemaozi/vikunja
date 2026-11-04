@@ -129,3 +129,53 @@ func TestRunWebhookDeliveryRetriesThenFails(t *testing.T) {
 	assert.Equal(t, WebhookDeliveryStatusFailed, loadDelivery(t, record.DeliveryID).Status)
 	_ = s.Close()
 }
+
+func TestDeliveryExpiredOwnerCannotFinalize(t *testing.T) {
+	webhook := newTestWebhook(t, "https://example.com/hook")
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	now := time.Now().UTC()
+	s = db.NewSession()
+	leaseA, result, err := ClaimWebhookDelivery(s, record.DeliveryID, DeliveryModeNormal, now, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "processing", result.Status)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	later := now.Add(31 * time.Second)
+	s = db.NewSession()
+	leaseB, result, err := ClaimWebhookDelivery(s, record.DeliveryID, DeliveryModeNormal, later, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "processing", result.Status)
+	require.NotEqual(t, leaseA.Token, leaseB.Token)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	s = db.NewSession()
+	stale, err := CompleteWebhookDelivery(s, record.DeliveryID, leaseA, later, DeliveryOutcome{
+		Kind: OutcomeDelivered,
+	})
+	require.NoError(t, err)
+	assert.False(t, stale)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	s = db.NewSession()
+	completed, err := CompleteWebhookDelivery(s, record.DeliveryID, leaseB, later, DeliveryOutcome{
+		Kind: OutcomeDelivered,
+	})
+	require.NoError(t, err)
+	assert.True(t, completed)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	assert.Equal(t, WebhookDeliveryStatusDelivered, loadDelivery(t, record.DeliveryID).Status)
+}
