@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,4 +231,56 @@ func TestDeliveryCASConcurrentNormalAndRecover(t *testing.T) {
 	}
 	assert.Equal(t, 1, statuses["processing"])
 	assert.Equal(t, 1, statuses["busy"])
+}
+
+func TestDeliverySixClaimsAcrossRestart(t *testing.T) {
+	allowLoopbackWebhook(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	webhook := newTestWebhook(t, server.URL)
+	s := db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	for attempt := 1; attempt <= 6; attempt++ {
+		reset := db.NewSession()
+		_, err := reset.Exec(
+			"UPDATE webhook_deliveries SET next_attempt_at = ? WHERE delivery_id = ?",
+			time.Now().Add(-time.Minute).UTC(), record.DeliveryID,
+		)
+		require.NoError(t, err)
+		require.NoError(t, reset.Commit())
+		_ = reset.Close()
+
+		result := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal)
+		if attempt < 6 {
+			assert.Equal(t, "retry", result.Status, "attempt %d", attempt)
+		} else {
+			assert.Equal(t, "failed", result.Status)
+		}
+	}
+	assert.EqualValues(t, 6, requests.Load())
+	assert.Equal(t, WebhookDeliveryStatusFailed, loadDelivery(t, record.DeliveryID).Status)
+
+	assert.Equal(t, "already_resolved",
+		RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeNormal).Status)
+	assert.EqualValues(t, 6, requests.Load())
+
+	retried := RunWebhookDelivery(context.Background(), record.DeliveryID, DeliveryModeRetry)
+	assert.Equal(t, "retry", retried.Status)
+	assert.EqualValues(t, 7, requests.Load())
+	pending := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, 1, pending.RetryGeneration)
+	assert.Equal(t, 1, pending.CycleAttemptCount)
 }

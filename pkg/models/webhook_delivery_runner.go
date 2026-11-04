@@ -89,13 +89,15 @@ func ClaimWebhookDelivery(
 	}
 
 	generation := "retry_generation"
+	attempts := "cycle_attempt_count + 1"
 	if mode == DeliveryModeRetry {
 		generation = "retry_generation + 1"
+		attempts = "1"
 	}
 
 	result, err := s.Exec(
 		"UPDATE webhook_deliveries SET status = 'processing', lease_token = ?, lease_until = ?, "+
-			"cycle_attempt_count = cycle_attempt_count + 1, retry_generation = "+generation+" "+
+			"cycle_attempt_count = "+attempts+", retry_generation = "+generation+" "+
 			"WHERE delivery_id = ? AND ("+where+")",
 		token, until, id, now, now,
 	)
