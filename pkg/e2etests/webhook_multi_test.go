@@ -263,16 +263,18 @@ func TestWebhookDeletedBetweenFanoutAndDelivery(t *testing.T) {
 	_, err := setupE2ETestEnv(ctx)
 	require.NoError(t, err)
 
-	// Build a delivery event for a webhook id that does not exist.
-	evt := &models.WebhookDeliveryEvent{
-		WebhookID: 9_999_999,
-		Payload: &models.WebhookPayload{
-			EventName: "task.updated",
-			Time:      time.Now(),
-			Data:      map[string]interface{}{},
-		},
-	}
-	body, err := json.Marshal(evt)
+	// Build an outbox record for a webhook id that does not exist.
+	s := db.NewSession()
+	record, err := models.CreateWebhookDelivery(s, 9_999_999, &models.WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
+	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	body, err := json.Marshal(&models.WebhookDeliveryEvent{DeliveryID: record.DeliveryID})
 	require.NoError(t, err)
 
 	msg := message.NewMessage(watermill.NewUUID(), body)

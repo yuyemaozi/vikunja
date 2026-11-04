@@ -24,6 +24,7 @@ import (
 	"code.vikunja.io/api/pkg/log"
 
 	"github.com/ThreeDotsLabs/watermill/message"
+	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -155,4 +156,19 @@ func TestShouldReportPoisonedMessage(t *testing.T) {
 	t.Run("flag set to something else", func(t *testing.T) {
 		assert.True(t, shouldReportPoisonedMessage(message.Metadata{MetadataSkipErrorReporting: "false"}))
 	})
+}
+
+func TestPoisonHandlerMatchesQualifiedHandlerName(t *testing.T) {
+	called := []string{}
+	RegisterPoisonHandler("webhook.delivery.listener", func(payload []byte, reason string) {
+		called = append(called, string(payload)+"|"+reason)
+	})
+
+	msg := message.NewMessage("id", []byte("payload"))
+	msg.Metadata.Set(middleware.PoisonedHandlerKey, "webhook.delivery.webhook.delivery.listener")
+	msg.Metadata.Set(middleware.ReasonForPoisonedKey, "boom")
+
+	runPoisonHandlers(msg)
+
+	assert.Equal(t, []string{"payload|boom"}, called)
 }

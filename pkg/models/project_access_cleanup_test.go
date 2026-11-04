@@ -315,11 +315,8 @@ func TestWebhookListener_SkipsCreatorWithoutAccess(t *testing.T) {
 	events.ClearDispatchedEvents()
 	events.TestListener(t, &TaskUpdatedEvent{Task: f.task, Doer: f.owner}, &WebhookListener{EventName: "task.updated"})
 
-	delivered := map[int64]bool{}
-	for _, e := range events.GetDispatchedEvents((&WebhookDeliveryEvent{}).Name()) {
-		delivered[e.(*WebhookDeliveryEvent).WebhookID] = true
-	}
-	assert.False(t, delivered[f.webhookC], "webhook of a creator without access was delivered")
+	delivered := webhookDeliveriesByID(t)
+	assert.NotContains(t, delivered, f.webhookC, "webhook of a creator without access was delivered")
 	assert.Len(t, delivered, 1, "the owner's webhook should still be delivered")
 }
 
@@ -349,13 +346,13 @@ func TestWebhookListener_SkipsInactiveCreator(t *testing.T) {
 			events.ClearDispatchedEvents()
 			events.TestListener(t, &TaskUpdatedEvent{Task: f.task, Doer: f.owner}, &WebhookListener{EventName: "task.updated"})
 
-			delivered := map[int64]bool{}
-			for _, e := range events.GetDispatchedEvents((&WebhookDeliveryEvent{}).Name()) {
-				delivered[e.(*WebhookDeliveryEvent).WebhookID] = true
-			}
-			assert.True(t, delivered[owners.ID], "the active owner's webhook should still be delivered")
-			assert.Equal(t, tc.delivered, delivered[f.webhookP])
-			assert.Equal(t, tc.delivered, delivered[f.webhookC])
+			delivered := webhookDeliveriesByID(t)
+			_, ownerDelivered := delivered[owners.ID]
+			_, parentDelivered := delivered[f.webhookP]
+			_, childDelivered := delivered[f.webhookC]
+			assert.True(t, ownerDelivered, "the active owner's webhook should still be delivered")
+			assert.Equal(t, tc.delivered, parentDelivered)
+			assert.Equal(t, tc.delivered, childDelivered)
 		})
 	}
 }

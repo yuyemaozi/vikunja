@@ -67,6 +67,7 @@ func GetTables() []interface{} {
 		&Favorite{},
 		&APIToken{},
 		&Webhook{},
+		&WebhookDeliveryRecord{},
 		&Reaction{},
 		&ProjectView{},
 		&TaskPosition{},

@@ -746,10 +746,17 @@ func TestWebhookDeliveryListenerSkipsErrorReporting(t *testing.T) {
 	require.NoError(t, s.Commit())
 	_ = s.Close()
 
-	payload, err := json.Marshal(&WebhookDeliveryEvent{
-		WebhookID: webhook.ID,
-		Payload:   &WebhookPayload{EventName: "task.updated"},
+	s = db.NewSession()
+	record, err := CreateWebhookDelivery(s, webhook.ID, &WebhookPayload{
+		EventName: "task.updated",
+		Time:      time.Now(),
+		Data:      map[string]interface{}{},
 	})
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	_ = s.Close()
+
+	payload, err := json.Marshal(&WebhookDeliveryEvent{DeliveryID: record.DeliveryID})
 	require.NoError(t, err)
 
 	msg := message.NewMessage("test", payload)
@@ -830,12 +837,18 @@ func TestTOTPAccountLockRevokesSessions(t *testing.T) {
 	assert.Equal(t, &SessionsRevokedEvent{UserID: 2}, singleDispatchedEvent[*SessionsRevokedEvent](t))
 }
 
-func webhookDeliveriesByID(t *testing.T) map[int64]*WebhookDeliveryEvent {
+func webhookDeliveriesByID(t *testing.T) map[int64]*WebhookDeliveryRecord {
 	t.Helper()
-	delivered := map[int64]*WebhookDeliveryEvent{}
+	delivered := map[int64]*WebhookDeliveryRecord{}
 	for _, e := range events.GetDispatchedEvents((&WebhookDeliveryEvent{}).Name()) {
-		d := e.(*WebhookDeliveryEvent)
-		delivered[d.WebhookID] = d
+		evt := e.(*WebhookDeliveryEvent)
+		s := db.NewSession()
+		record := &WebhookDeliveryRecord{}
+		has, err := s.Where("delivery_id = ?", evt.DeliveryID).Get(record)
+		_ = s.Close()
+		require.NoError(t, err)
+		require.True(t, has, "delivery %s should be persisted", evt.DeliveryID)
+		delivered[record.WebhookID] = record
 	}
 	return delivered
 }
@@ -879,13 +892,24 @@ func TestWebhookListener_TaskPayloadUsesCreatorAccess(t *testing.T) {
 	events.ClearDispatchedEvents()
 	events.TestListener(t, &TaskUpdatedEvent{Task: &Task{ID: 1, ProjectID: 1}, Doer: &user.User{ID: 1}}, &WebhookListener{EventName: "task.updated"})
 
-	relatedIDs := func(d *WebhookDeliveryEvent) []int64 {
+	relatedIDs := func(d *WebhookDeliveryRecord) []int64 {
 		require.NotNil(t, d)
-		task, ok := d.Payload.Data.(map[string]interface{})["task"].(Task)
+		require.NotNil(t, d.Payload)
+		data, ok := d.Payload.Data.(map[string]interface{})
+		require.True(t, ok)
+		task, ok := data["task"].(map[string]interface{})
 		require.True(t, ok, "task should be reloaded")
+		relatedRaw, ok := task["related_tasks"].(map[string]interface{})
+		require.True(t, ok)
+		related, ok := relatedRaw[string(RelationKindRelated)].([]interface{})
+		require.True(t, ok)
 		ids := []int64{}
-		for _, related := range task.RelatedTasks[RelationKindRelated] {
-			ids = append(ids, related.ID)
+		for _, item := range related {
+			relatedTask, ok := item.(map[string]interface{})
+			require.True(t, ok)
+			id, ok := relatedTask["id"].(float64)
+			require.True(t, ok)
+			ids = append(ids, int64(id))
 		}
 		return ids
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,37 @@ var pubsub *gochannel.GoChannel
 // activeHandlers tracks in-flight event handler goroutines so the test
 // endpoint can wait for them to finish before truncating tables.
 var activeHandlers sync.WaitGroup
+
+// PoisonHandler receives a poisoned message's raw payload and poison reason.
+type PoisonHandler func(payload []byte, reason string)
+
+var poisonHandlers = map[string]PoisonHandler{}
+var poisonHandlersMu sync.RWMutex
+
+// RegisterPoisonHandler registers a sink for messages poisoned by the named
+// listener. Matching is exact or by suffix, because router handler names are
+// topic-qualified (for example webhook.delivery.webhook.delivery.listener).
+func RegisterPoisonHandler(handlerName string, handler PoisonHandler) {
+	poisonHandlersMu.Lock()
+	defer poisonHandlersMu.Unlock()
+	poisonHandlers[handlerName] = handler
+}
+
+func runPoisonHandlers(msg *message.Message) {
+	poisoned := msg.Metadata.Get(middleware.PoisonedHandlerKey)
+	reason := msg.Metadata.Get(middleware.ReasonForPoisonedKey)
+	poisonHandlersMu.RLock()
+	handlers := make(map[string]PoisonHandler, len(poisonHandlers))
+	for name, handler := range poisonHandlers {
+		handlers[name] = handler
+	}
+	poisonHandlersMu.RUnlock()
+	for name, handler := range handlers {
+		if poisoned == name || strings.HasSuffix(poisoned, "."+name) {
+			handler(msg.Payload, reason)
+		}
+	}
+}
 
 // WaitForPendingHandlers blocks until all currently in-flight event handler
 // goroutines have completed (including retries). This is intended for the
@@ -107,6 +139,7 @@ func InitEvents() (err error) {
 		}
 		// The payload is deliberately not logged: events can carry credentials and user data.
 		log.Errorf("Error while handling message %s, %s", msg.UUID, meta)
+		runPoisonHandlers(msg)
 
 		if config.SentryEnabled.GetBool() && shouldReportPoisonedMessage(msg.Metadata) {
 			failure := &messageHandleFailedError{Metadata: msg.Metadata}

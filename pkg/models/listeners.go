@@ -83,6 +83,16 @@ func RegisterListeners() {
 
 		// Internal delivery listener — one message per webhook with its own retry lifecycle
 		events.RegisterListener((&WebhookDeliveryEvent{}).Name(), &WebhookDeliveryListener{})
+		events.RegisterPoisonHandler((&WebhookDeliveryListener{}).Name(), func(payload []byte, _ string) {
+			evt := &WebhookDeliveryEvent{}
+			if err := json.Unmarshal(payload, evt); err != nil || evt.DeliveryID == "" {
+				log.Errorf("Could not mark poisoned webhook delivery: invalid payload")
+				return
+			}
+			if err := MarkWebhookDeliveryPoisoned(evt.DeliveryID); err != nil {
+				log.Errorf("Could not mark webhook delivery %s as poisoned: %s", evt.DeliveryID, err)
+			}
+		})
 	}
 	if config.AuditEnabled.GetBool() {
 		registerEventsForAuditLogging()
@@ -1233,25 +1243,11 @@ func (wdl *WebhookDeliveryListener) Handle(msg *message.Message) error {
 	if err := json.Unmarshal(msg.Payload, evt); err != nil {
 		return err
 	}
-
-	if evt.Payload == nil {
-		return fmt.Errorf("webhook delivery event for webhook %d has no payload", evt.WebhookID)
+	if evt.DeliveryID == "" {
+		return fmt.Errorf("webhook delivery event has no delivery id")
 	}
 
-	s := db.NewSession()
-	defer s.Close()
-
-	webhook := &Webhook{}
-	has, err := s.Where("id = ?", evt.WebhookID).Get(webhook)
-	if err != nil {
-		return err
-	}
-	if !has {
-		log.Debugf("webhook %d no longer exists, skipping delivery of %s", evt.WebhookID, evt.Payload.EventName)
-		return nil
-	}
-
-	if err := webhook.sendWebhookPayload(evt.Payload); err != nil {
+	if err := AttemptWebhookDelivery(evt.DeliveryID); err != nil {
 		// A target that is down or rejects the payload is the user's to fix, so
 		// don't report it — but still retry and eventually poison the message.
 		msg.Metadata.Set(events.MetadataSkipErrorReporting, "true")
@@ -1690,20 +1686,28 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 			}
 		}
 
+		recordSession := db.NewAutocommitSession()
+		record, createErr := CreateWebhookDelivery(recordSession, webhook.ID, &WebhookPayload{
+			EventName: wl.EventName,
+			Time:      now,
+			Data:      perWebhookEvent,
+		})
+		_ = recordSession.Close()
+		if createErr != nil {
+			// Persisting the outbox row failed. Log and continue with the other
+			// webhooks instead of retrying the parent fan-out, which would
+			// duplicate deliveries that were already committed.
+			log.Errorf("Could not persist webhook delivery for webhook %d: %s", webhook.ID, createErr)
+			continue
+		}
+
 		dispatchErr := events.Dispatch(&WebhookDeliveryEvent{
-			WebhookID: webhook.ID,
-			Payload: &WebhookPayload{
-				EventName: wl.EventName,
-				Time:      now,
-				Data:      perWebhookEvent,
-			},
+			DeliveryID: record.DeliveryID,
 		})
 		if dispatchErr != nil {
-			// A dispatch failure here means the in-process event bus is broken —
-			// there is nothing useful to retry per-webhook and we do not want
-			// to fail the parent message (which would re-fan-out and duplicate
-			// any deliveries that did succeed). Log and move on.
-			log.Errorf("Could not dispatch webhook.delivery for webhook %d: %s", webhook.ID, dispatchErr)
+			// The record stays pending and can be retried through the management
+			// command without re-fanning out the parent event.
+			log.Errorf("Could not dispatch webhook.delivery %s: %s", record.DeliveryID, dispatchErr)
 		}
 	}
 
