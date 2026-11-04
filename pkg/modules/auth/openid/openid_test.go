@@ -633,7 +633,9 @@ func TestGetOrCreateUser(t *testing.T) {
 
 		u, linked, err := getOrCreateUser(s, cl, &Provider{}, idToken)
 		require.Error(t, err)
-		assert.True(t, user.IsErrAccountIsBot(err))
+		var botErr *user.ErrAccountIsBot
+		require.ErrorAs(t, err, &botErr)
+		assert.Equal(t, int64(23), botErr.UserID)
 		assert.False(t, linked)
 		assert.Nil(t, u)
 		usersAfter, err := s.Count(&user.User{})
