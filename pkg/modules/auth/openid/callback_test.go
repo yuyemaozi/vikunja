@@ -253,6 +253,33 @@ func TestAuthenticateCallbackLinkedIdentity(t *testing.T) {
 		assert.Equal(t, int32(0), hits.Load(), "picture must not be fetched for a linked user")
 		assertTeamSynced(t, 1, "idp-team-1")
 	})
+	t.Run("keeps an openid avatar when the IdP sends no picture", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		idp := newMockIDP(t)
+		idp.configure(t)
+		linkIdentity(t, 1, idp.URL, "avatar-sub")
+
+		s := db.NewSession()
+		_, err := s.ID(1).Cols("avatar_provider").Update(&user.User{AvatarProvider: "openid"})
+		require.NoError(t, err)
+		require.NoError(t, s.Commit())
+		s.Close()
+
+		idp.setClaims(map[string]any{
+			"sub":                "avatar-sub",
+			"email":              "idp-email@example.com",
+			"preferred_username": "idpUsername",
+		})
+		u, _, err := AuthenticateCallback(t.Context(), &Callback{Code: "code"}, mockIDPProviderKey)
+		require.NoError(t, err)
+		avatar.WaitForProviderSyncsForTests()
+
+		assert.Equal(t, int64(1), u.ID)
+		db.AssertExists(t, "users", map[string]interface{}{
+			"id":              1,
+			"avatar_provider": "openid",
+		}, false)
+	})
 	t.Run("refuses a linked user who cannot authenticate", func(t *testing.T) {
 		cases := map[string]struct {
 			userID  int64
