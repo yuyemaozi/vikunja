@@ -184,6 +184,12 @@ func TestLinkIdentity(t *testing.T) {
 			req.TOTPPasscode = passcode
 			_, err = runLink(t, u, req)
 			require.NoError(t, err)
+
+			db.AssertExists(t, "user_identities", map[string]interface{}{
+				"user_id": u.ID,
+				"issuer":  idp.URL,
+				"subject": "totp-sub",
+			}, false)
 		})
 	})
 	t.Run("refuses an identity linked to another user", func(t *testing.T) {
@@ -224,6 +230,9 @@ func TestLinkIdentity(t *testing.T) {
 		require.Error(t, err)
 
 		assert.True(t, models.IsErrUserIdentityLinkedToOtherUser(err), "unexpected error %v", err)
+		db.AssertMissing(t, "user_identities", map[string]interface{}{
+			"user_id": 2,
+		})
 	})
 	t.Run("refuses a second identity for the same issuer", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
