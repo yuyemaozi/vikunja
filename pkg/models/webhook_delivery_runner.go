@@ -17,8 +17,11 @@
 package models
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"code.vikunja.io/api/pkg/db"
 
 	"github.com/google/uuid"
 	"xorm.io/xorm"
@@ -172,4 +175,86 @@ func CompleteWebhookDelivery(
 		return false, err
 	}
 	return affected == 1, nil
+}
+
+var deliveryNow = func() time.Time { return time.Now().UTC() }
+
+var deliveryBackoff = []time.Duration{
+	100 * time.Millisecond,
+	200 * time.Millisecond,
+	400 * time.Millisecond,
+	800 * time.Millisecond,
+	1600 * time.Millisecond,
+}
+
+const (
+	deliveryLeaseTTL   = 30 * time.Second
+	deliveryMaxAttempt = 6
+)
+
+// RunWebhookDelivery claims, performs one HTTP attempt and persists its outcome.
+func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) DeliveryResult {
+	now := deliveryNow()
+	session := db.NewSession()
+	lease, result, err := ClaimWebhookDelivery(session, id, mode, now, deliveryLeaseTTL)
+	if err != nil {
+		_ = session.Close()
+		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
+	}
+	if result.Status != "processing" {
+		_ = session.Close()
+		return result
+	}
+
+	record := &WebhookDeliveryRecord{}
+	has, err := session.Where("delivery_id = ?", id).Get(record)
+	webhook := &Webhook{}
+	webhookFound := false
+	if has && err == nil {
+		webhookFound, err = session.Where("id = ?", record.WebhookID).Get(webhook)
+	}
+	if commitErr := session.Commit(); commitErr != nil {
+		err = commitErr
+	}
+	_ = session.Close()
+	if err != nil || !has {
+		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "read_failed"}
+	}
+
+	outcome := DeliveryOutcome{Kind: OutcomeDelivered}
+	if !webhookFound {
+		outcome = DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
+	} else if sendErr := webhook.sendWebhookPayloadWithRequestID(record.Payload, record.RequestID); sendErr != nil {
+		if lease.Attempt >= deliveryMaxAttempt {
+			outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
+		} else {
+			backoff := deliveryBackoff[min(lease.Attempt-1, len(deliveryBackoff)-1)]
+			retryAt := deliveryNow().Add(backoff)
+			outcome = DeliveryOutcome{
+				Kind:      OutcomeRetry,
+				ErrorCode: "delivery_failed",
+				RetryAt:   &retryAt,
+			}
+		}
+	}
+
+	completeSession := db.NewSession()
+	completed, err := CompleteWebhookDelivery(completeSession, id, lease, deliveryNow(), outcome)
+	if err != nil || !completed {
+		_ = completeSession.Close()
+		return DeliveryResult{DeliveryID: id, Status: "busy", ErrorCode: "lease_lost"}
+	}
+	if commitErr := completeSession.Commit(); commitErr != nil {
+		_ = completeSession.Close()
+		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
+	}
+	_ = completeSession.Close()
+	return DeliveryResult{DeliveryID: id, Status: outcome.Kind, ErrorCode: outcome.ErrorCode}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
