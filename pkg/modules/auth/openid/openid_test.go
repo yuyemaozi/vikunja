@@ -25,6 +25,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/png"
 	"math/big"
@@ -33,6 +34,7 @@ import (
 	"net/http/httputil"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -570,6 +572,16 @@ func captureWarnings(t *testing.T) func() string {
 	}
 }
 
+const fallbackWarningMarker = "via the deprecated emailfallback/usernamefallback option"
+
+func expectedFallbackWarning(userID int) string {
+	return fmt.Sprintf(
+		`OpenID provider \"test\" matched local user %d %s. `+
+			"Both options will be removed in a future release; the user must link the provider from their account settings before then.",
+		userID, fallbackWarningMarker,
+	)
+}
+
 func TestFallbackLogsDeprecationWarning(t *testing.T) {
 	t.Run("username fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
@@ -592,7 +604,8 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 
 		out := logged()
 		assert.Contains(t, out, "level=WARN")
-		assert.Contains(t, out, `OpenID provider \"test\" matched local user 11 via the deprecated`)
+		assert.Contains(t, out, expectedFallbackWarning(11))
+		assert.Equal(t, 1, strings.Count(out, fallbackWarningMarker))
 	})
 	t.Run("email fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
@@ -617,7 +630,10 @@ func TestFallbackLogsDeprecationWarning(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(11), u.ID)
 
-		assert.Contains(t, logged(), `OpenID provider \"test\" matched local user 11 via the deprecated`)
+		out := logged()
+		assert.Contains(t, out, "level=WARN")
+		assert.Contains(t, out, expectedFallbackWarning(11))
+		assert.Equal(t, 1, strings.Count(out, fallbackWarningMarker))
 	})
 	t.Run("no fallback match", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
