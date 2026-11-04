@@ -95,12 +95,14 @@ func ClaimWebhookDelivery(
 		attempts = "1"
 	}
 
-	result, err := s.Exec(
-		"UPDATE webhook_deliveries SET status = 'processing', lease_token = ?, lease_until = ?, "+
-			"cycle_attempt_count = "+attempts+", retry_generation = "+generation+" "+
-			"WHERE delivery_id = ? AND ("+where+")",
-		token, until, id, now, now,
-	)
+	arguments := []any{token, until, id}
+	if mode != DeliveryModeRetry {
+		arguments = append(arguments, now, now)
+	}
+	statement := "UPDATE webhook_deliveries SET status = 'processing', lease_token = ?, lease_until = ?, " +
+		"cycle_attempt_count = " + attempts + ", retry_generation = " + generation + " " +
+		"WHERE delivery_id = ? AND (" + where + ")"
+	result, err := s.Exec(append([]any{statement}, arguments...)...)
 	if err != nil {
 		return Lease{}, DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}, err
 	}

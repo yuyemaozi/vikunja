@@ -124,7 +124,7 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", args[0], result.Status)
 			os.Exit(2)
 		default:
-			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", args[0], result.Status)
+			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s (%s)\n", args[0], result.Status, result.ErrorCode)
 			os.Exit(1)
 		}
 	},
