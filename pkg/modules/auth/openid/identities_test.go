@@ -49,8 +49,7 @@ func loadIdentityTestUser(t *testing.T, id int64) *user.User {
 	return u
 }
 
-// enableTestTOTP gives userID its own secret. The fixture TOTP of user 10 and
-// the secret of the linked-login test would collide on "passcode already used".
+// Own secret: user 10's fixture TOTP and the linked-login test's would collide on "passcode already used".
 func enableTestTOTP(t *testing.T, userID int64) string {
 	t.Helper()
 	const secret = "JBSWY3DPEHPK3PXP"

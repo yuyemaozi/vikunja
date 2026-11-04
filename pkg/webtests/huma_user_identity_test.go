@@ -31,8 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Provider resolution and the code exchange are covered against a mock IdP in
-// pkg/modules/auth/openid; these tests cover the HTTP surface.
+// Provider resolution and the code exchange are covered in pkg/modules/auth/openid.
 
 func setupIdentityTestEnv(t *testing.T) *echo.Echo {
 	t.Helper()

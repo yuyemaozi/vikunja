@@ -26,14 +26,12 @@ import (
 	"xorm.io/xorm"
 )
 
-// LinkedIdentity is a user's linked identity with its provider resolved from the issuer.
 type LinkedIdentity struct {
 	models.UserIdentity
 	ProviderKey  string `json:"provider_key" readOnly:"true" doc:"The key of the configured provider this identity belongs to. Empty when no configured provider matches the issuer anymore."`
 	ProviderName string `json:"provider_name" readOnly:"true" doc:"The display name of the configured provider. Empty when no configured provider matches the issuer anymore."`
 }
 
-// LinkIdentityRequest links the identity behind an authorization code to the current user.
 type LinkIdentityRequest struct {
 	Provider     string `json:"provider" doc:"The provider key as returned by /info."`
 	Code         string `json:"code" doc:"The authorization code the provider redirected back with."`
@@ -42,8 +40,7 @@ type LinkIdentityRequest struct {
 	TOTPPasscode string `json:"totp_passcode,omitempty" doc:"A current totp passcode. Required when the user has totp enabled."`
 }
 
-// reauthenticate checks the password and, if enabled, the totp passcode. Both
-// count toward the account lockout. Rolls s back on failure.
+// Both checks count toward the account lockout. Rolls s back on failure.
 func reauthenticate(ctx context.Context, s *xorm.Session, u *user.User, password, passcode string) error {
 	err := user.ThrottleReauth(u.ID, func() error {
 		if err := user.CheckUserPasswordCountingFailures(ctx, s, u, password); err != nil {
@@ -61,15 +58,14 @@ func reauthenticate(ctx context.Context, s *xorm.Session, u *user.User, password
 	return err
 }
 
-// LinkIdentity reauthenticates u, exchanges the code and links the resulting
-// identity. An identity already linked to u is returned unchanged.
+// An identity already linked to u is returned unchanged.
 func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkIdentityRequest) (*LinkedIdentity, error) {
 	// Before the exchange: the code is single-use, so a typo must not burn it.
 	if err := reauthenticate(ctx, s, u, req.Password, req.TOTPPasscode); err != nil {
 		return nil, err
 	}
 
-	// Not across the IdP round trips: SQLite would fail the later write upgrade, others would check a stale snapshot.
+	// Ended before the IdP round trips so the checks below don't run on a stale snapshot.
 	if err := s.Rollback(); err != nil {
 		return nil, err
 	}
@@ -132,7 +128,6 @@ func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkI
 	return withProvider(newIdentity, provider), nil
 }
 
-// UnlinkIdentity reauthenticates u and removes one of u's identities.
 // Another user's identity is reported as nonexistent.
 func UnlinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, identityID int64, password, passcode string) error {
 	if err := reauthenticate(ctx, s, u, password, passcode); err != nil {
@@ -151,7 +146,6 @@ func UnlinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, identity
 	return nil
 }
 
-// ListIdentities returns u's linked identities with their providers resolved.
 func ListIdentities(s *xorm.Session, u *user.User) ([]*LinkedIdentity, error) {
 	identities, err := models.GetUserIdentitiesByUserID(s, u.ID)
 	if err != nil {
