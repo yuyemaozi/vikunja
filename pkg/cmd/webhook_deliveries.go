@@ -23,7 +23,6 @@ import (
 	"text/tabwriter"
 
 	"code.vikunja.io/api/pkg/db"
-	"code.vikunja.io/api/pkg/events"
 	"code.vikunja.io/api/pkg/initialize"
 	"code.vikunja.io/api/pkg/models"
 
@@ -72,11 +71,11 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Webhook delivery %s is not failed\n", args[0])
 			os.Exit(1)
 		}
-		if err := events.Dispatch(&models.WebhookDeliveryEvent{DeliveryID: args[0]}); err != nil {
-			fmt.Fprintf(os.Stderr, "Webhook delivery %s is pending but dispatch failed: %v\n", args[0], err)
+		if err := models.AttemptWebhookDelivery(args[0]); err != nil {
+			fmt.Fprintf(os.Stderr, "Webhook delivery %s is pending but delivery failed: %v\n", args[0], err)
 			os.Exit(1)
 		}
-		fmt.Printf("Webhook delivery %s requeued\n", args[0])
+		fmt.Printf("Webhook delivery %s requeued and delivered\n", args[0])
 	},
 }
 
