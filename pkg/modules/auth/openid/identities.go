@@ -69,11 +69,20 @@ func LinkIdentity(ctx context.Context, s *xorm.Session, u *user.User, req *LinkI
 		return nil, false, err
 	}
 
+	// Not across the IdP round trips: SQLite would fail the later write upgrade, others would check a stale snapshot.
+	if err := s.Rollback(); err != nil {
+		return nil, false, err
+	}
+
 	provider, _, idToken, _, err := exchangeOidcTokens(ctx, &Callback{
 		Code:        req.Code,
 		RedirectURL: req.RedirectURL,
 	}, req.Provider)
 	if err != nil {
+		return nil, false, err
+	}
+
+	if err := s.Begin(); err != nil {
 		return nil, false, err
 	}
 
