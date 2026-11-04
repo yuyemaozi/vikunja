@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/db"
 
 	"github.com/google/uuid"
@@ -222,7 +223,9 @@ var deliverySleeper = func(ctx context.Context, duration time.Duration) error {
 // transaction, persist the outcome, wait for the persisted retry time and
 // re-claim. It never holds a transaction while sending or sleeping.
 func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) DeliveryResult {
-	deadline := deliveryNow().Add(6*deliveryLeaseTTL + 10*time.Second)
+	httpTimeout := time.Duration(config.WebhooksTimeoutSeconds.GetInt()) * time.Second
+	leaseTTL := httpTimeout + 30*time.Second
+	deadline := deliveryNow().Add(6*httpTimeout + 10*time.Second)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
@@ -238,7 +241,7 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 		}
 
 		session, cancel := newDeliveryPhase(ctx)
-		lease, result, err := ClaimWebhookDelivery(session, id, claimMode, now, deliveryLeaseTTL)
+		lease, result, err := ClaimWebhookDelivery(session, id, claimMode, now, leaseTTL)
 		if err != nil {
 			cancel()
 			_ = session.Close()
@@ -269,7 +272,7 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 		outcome := DeliveryOutcome{Kind: OutcomeDelivered}
 		if !webhookFound {
 			outcome = DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
-		} else if sendErr := sendPersistedWebhook(webhook, record); sendErr != nil {
+		} else if sendErr := sendPersistedWebhook(ctx, webhook, record); sendErr != nil {
 			if lease.Attempt >= deliveryMaxAttempt {
 				outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
 			} else {
@@ -317,7 +320,7 @@ func min(a, b int) int {
 	return b
 }
 
-func sendPersistedWebhook(webhook *Webhook, record *WebhookDeliveryRecord) error {
+func sendPersistedWebhook(ctx context.Context, webhook *Webhook, record *WebhookDeliveryRecord) error {
 	body := record.PayloadBody
 	if len(body) == 0 {
 		if record.Payload == nil {
@@ -329,5 +332,5 @@ func sendPersistedWebhook(webhook *Webhook, record *WebhookDeliveryRecord) error
 			return err
 		}
 	}
-	return webhook.sendWebhookRaw(body, record.RequestID)
+	return webhook.sendWebhookRawContext(ctx, body, record.RequestID)
 }

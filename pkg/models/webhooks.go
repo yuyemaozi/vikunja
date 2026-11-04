@@ -361,7 +361,12 @@ func (w *Webhook) sendWebhookPayloadWithRequestID(p *WebhookPayload, requestID s
 
 // sendWebhookRaw sends the exact persisted bytes without re-serializing.
 func (w *Webhook) sendWebhookRaw(payload []byte, requestID string) (err error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, w.TargetURL, bytes.NewReader(payload))
+	return w.sendWebhookRawContext(context.Background(), payload, requestID)
+}
+
+// sendWebhookRawContext sends persisted bytes bound to the caller's context.
+func (w *Webhook) sendWebhookRawContext(ctx context.Context, payload []byte, requestID string) (err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.TargetURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
