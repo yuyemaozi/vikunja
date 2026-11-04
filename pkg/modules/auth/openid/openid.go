@@ -479,6 +479,9 @@ func getLinkedUser(s *xorm.Session, idToken *oidc.IDToken) (*user.User, bool, er
 	if err != nil && !user.IsErrUserStatusError(err) {
 		return nil, false, err
 	}
+	if u.IsBot() {
+		return nil, false, &user.ErrAccountIsBot{UserID: u.ID}
+	}
 	return u, true, nil
 }
 

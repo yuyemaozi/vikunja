@@ -632,6 +632,30 @@ func TestGetOrCreateUser(t *testing.T) {
 		assert.Equal(t, int64(17), u.ID)
 		assert.True(t, user.IsErrAccountDisabled(user.CheckUserCanAuthenticate(u)))
 	})
+	t.Run("LinkedIdentity: bot user is refused", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		usersBefore, err := s.Count(&user.User{})
+		require.NoError(t, err)
+
+		cl := &claims{
+			Email:             "idp-bot@example.com",
+			EmailVerified:     true,
+			PreferredUsername: "idpBot",
+		}
+		idToken := &oidc.IDToken{Issuer: "https://some.service.com", Subject: "linked-bot"}
+
+		u, linked, err := getOrCreateUser(s, cl, &Provider{}, idToken)
+		require.Error(t, err)
+		assert.True(t, user.IsErrAccountIsBot(err))
+		assert.False(t, linked)
+		assert.Nil(t, u)
+		usersAfter, err := s.Count(&user.User{})
+		require.NoError(t, err)
+		assert.Equal(t, usersBefore, usersAfter, "no new user should have been created")
+	})
 	t.Run("ProviderFallback: does not create a linked identity", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
