@@ -18,13 +18,16 @@ package cmd
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,6 +87,20 @@ func TestWebhookCLIExitMatrix(t *testing.T) {
 
 	code, _ := runCLI(t, binary, databasePath, "webhook-deliveries", "retry", "00000000-0000-0000-0000-000000000000", "--format", "json")
 	assert.Equal(t, 2, code, "missing delivery must exit 2")
+
+	database, err := sql.Open("sqlite3", databasePath)
+	require.NoError(t, err)
+	const busyID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10f"
+	_, err = database.Exec(
+		"INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_name, payload, status, lease_token, lease_until, retry_generation, cycle_attempt_count, created_at) "+
+			"VALUES (?, 1, 'task.updated', '{}', 'processing', 'lease', ?, 0, 1, CURRENT_TIMESTAMP)",
+		busyID, time.Now().Add(time.Hour).UTC(),
+	)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	code, _ = runCLI(t, binary, databasePath, "webhook-deliveries", "retry", busyID, "--format", "json")
+	assert.Equal(t, 2, code, "a valid lease must exit 2")
 
 	code, stdout := runCLI(t, binary, databasePath, "webhook-deliveries", "recover-pending", "--format", "json", "--limit", "1")
 	assert.Equal(t, 0, code)
