@@ -17,6 +17,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -140,4 +141,32 @@ func TestNewOutboxRejectsInvalidRequestID(t *testing.T) {
 		Payload:    payload,
 	}, "")
 	assert.Error(t, err)
+}
+
+func TestRequestMetaBoundBeforeSnapshot(t *testing.T) {
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+
+	const requestID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10e"
+	s := db.NewSession()
+	defer s.Close()
+	defer events.CleanupPending(s)
+
+	events.BindRequestMeta(
+		s,
+		events.WithRequestMeta(context.Background(), &events.RequestMeta{RequestID: requestID}),
+	)
+	require.NoError(t, events.DispatchOnCommit(s, &TaskUpdatedEvent{
+		Task: &Task{ID: 1, ProjectID: 1},
+		Doer: &user.User{ID: 1},
+	}))
+
+	records := []*WebhookDeliveryRecord{}
+	require.NoError(t, s.OrderBy("id DESC").Limit(1).Find(&records))
+	require.NotEmpty(t, records)
+	assert.Equal(t, requestID, records[0].RequestID)
+	require.NoError(t, s.Rollback())
 }
