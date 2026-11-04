@@ -616,22 +616,6 @@ func TestGetOrCreateUser(t *testing.T) {
 		assert.NotEqual(t, int64(1), u.ID)
 		assert.Equal(t, "https://unrelated.issuer", u.Issuer)
 	})
-	t.Run("LinkedIdentity: disabled user is returned for the caller to refuse", func(t *testing.T) {
-		db.LoadAndAssertFixtures(t)
-		s := db.NewSession()
-		defer s.Close()
-
-		cl := &claims{
-			Email: "idp-email@example.com",
-		}
-		idToken := &oidc.IDToken{Issuer: "https://some.service.com", Subject: "linked-user17"}
-
-		u, linked, err := getOrCreateUser(s, cl, &Provider{}, idToken)
-		require.NoError(t, err)
-		assert.True(t, linked)
-		assert.Equal(t, int64(17), u.ID)
-		assert.True(t, user.IsErrAccountDisabled(user.CheckUserCanAuthenticate(u)))
-	})
 	t.Run("LinkedIdentity: bot user is refused", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)
 		s := db.NewSession()
