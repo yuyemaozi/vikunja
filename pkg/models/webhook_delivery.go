@@ -47,6 +47,9 @@ type WebhookDeliveryRecord struct {
 	WebhookID     int64           `xorm:"bigint not null index" json:"webhook_id"`
 	EventName     string          `xorm:"varchar(255) not null" json:"event_name"`
 	RequestID     string          `xorm:"varchar(36) null" json:"request_id"`
+	EventID       string          `xorm:"varchar(36) null" json:"event_id"`
+	PayloadBody   []byte          `xorm:"blob null" json:"-"`
+	PayloadSHA256 string          `xorm:"varchar(64) null" json:"payload_sha256"`
 	Payload       *WebhookPayload `xorm:"JSON not null" json:"-"`
 	Status        string          `xorm:"varchar(16) not null index" json:"status"`
 	AttemptCount  int             `xorm:"int not null default 0" json:"attempt_count"`
