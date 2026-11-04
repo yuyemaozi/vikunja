@@ -17,9 +17,16 @@
 package models
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
+
+	"code.vikunja.io/api/pkg/db"
+	"code.vikunja.io/api/pkg/events"
+	"code.vikunja.io/api/pkg/user"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebhookRegistryHasExactly19Sources(t *testing.T) {
@@ -36,4 +43,40 @@ func TestWebhookRegistryHasExactly19Sources(t *testing.T) {
 func TestRegisterWebhookOutboxIsIdempotent(t *testing.T) {
 	assert.NoError(t, RegisterWebhookOutbox())
 	assert.NoError(t, RegisterWebhookOutbox())
+}
+
+func TestTransactionalSinkBeforeEnqueue(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+
+	payload, err := json.Marshal(&TaskUpdatedEvent{
+		Task: &Task{ID: 1, ProjectID: 1},
+		Doer: &user.User{ID: 1},
+	})
+	require.NoError(t, err)
+
+	const eventID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b"
+	prepared := events.PreparedEvent{
+		ID:         eventID,
+		Name:       "task.updated",
+		OccurredAt: time.Now().UTC(),
+		Payload:    payload,
+	}
+
+	s := db.NewSession()
+	followUps, err := StageWebhookDeliveries(s, prepared, "018f8f4c-2e18-7b61-9a50-9c4f5de4e10b")
+	require.NoError(t, err)
+	require.NotEmpty(t, followUps)
+
+	visible, err := s.Where("event_id = ?", eventID).Count(&WebhookDeliveryRecord{})
+	require.NoError(t, err)
+	require.Positive(t, visible)
+
+	require.NoError(t, s.Rollback())
+	_ = s.Close()
+
+	after := db.NewSession()
+	count, err := after.Where("event_id = ?", eventID).Count(&WebhookDeliveryRecord{})
+	require.NoError(t, err)
+	assert.Zero(t, count)
+	_ = after.Close()
 }
