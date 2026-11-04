@@ -45,7 +45,21 @@ func (legacyWebhookDelivery20261104000100) TableName() string {
 func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
 	x, err := db.CreateTestEngine()
 	require.NoError(t, err)
-	require.NoError(t, x.DropTables(&legacyWebhookDelivery20261104000100{}))
+
+	const backup = "webhook_deliveries_backup_20261104000100"
+	existed, err := x.IsTableExist("webhook_deliveries")
+	require.NoError(t, err)
+	if existed {
+		_, renameErr := x.Exec("ALTER TABLE webhook_deliveries RENAME TO " + backup)
+		require.NoError(t, renameErr)
+	}
+	t.Cleanup(func() {
+		require.NoError(t, x.DropTables(&legacyWebhookDelivery20261104000100{}))
+		if existed {
+			_, restoreErr := x.Exec("ALTER TABLE " + backup + " RENAME TO webhook_deliveries")
+			require.NoError(t, restoreErr)
+		}
+	})
 	require.NoError(t, x.Sync2(&legacyWebhookDelivery20261104000100{}))
 
 	legacy := &legacyWebhookDelivery20261104000100{
@@ -60,9 +74,13 @@ func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
 
 	require.NoError(t, migrateWebhookDeliveriesStaging20261104000100(x))
 
+	placeholder := "?"
+	if x.Dialect().URI().DBType == "postgres" {
+		placeholder = "$1"
+	}
 	var eventID *string
 	err = x.DB().QueryRow(
-		"SELECT event_id FROM webhook_deliveries WHERE delivery_id = ?",
+		"SELECT event_id FROM webhook_deliveries WHERE delivery_id = "+placeholder,
 		legacy.DeliveryID,
 	).Scan(&eventID)
 	require.NoError(t, err)
@@ -81,8 +99,4 @@ func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
 	require.NoError(t, insertStaged("33333333-3333-3333-3333-333333333333"))
 	assert.Error(t, insertStaged("44444444-4444-4444-4444-444444444444"))
 
-	t.Cleanup(func() {
-		cleanupErr := x.DropTables(&legacyWebhookDelivery20261104000100{})
-		require.NoError(t, cleanupErr)
-	})
 }
