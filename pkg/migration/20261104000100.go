@@ -26,7 +26,7 @@ import (
 type webhookDeliveriesStaging20261104000100 struct {
 	EventID       string `xorm:"varchar(36) null"`
 	PayloadBody   []byte `xorm:"blob null"`
-	PayloadSHA256 string `xorm:"varchar(64) null"`
+	PayloadSHA256 string `xorm:"'payload_sha256' varchar(64) null"`
 }
 
 func (webhookDeliveriesStaging20261104000100) TableName() string {
