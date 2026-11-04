@@ -17,6 +17,7 @@
 package models
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -1248,13 +1249,14 @@ func (wdl *WebhookDeliveryListener) Handle(msg *message.Message) error {
 		return fmt.Errorf("webhook delivery event has no delivery id")
 	}
 
-	if err := AttemptWebhookDelivery(evt.DeliveryID); err != nil {
-		// A target that is down or rejects the payload is the user's to fix, so
-		// don't report it — but still retry and eventually poison the message.
+	result := RunWebhookDelivery(context.Background(), evt.DeliveryID, DeliveryModeNormal)
+	if result.Status == "error" {
 		msg.Metadata.Set(events.MetadataSkipErrorReporting, "true")
-		return err
+		return fmt.Errorf("webhook delivery %s failed: %s", evt.DeliveryID, result.ErrorCode)
 	}
 
+	// The driver persists retry/failure state; never hand HTTP errors to the
+	// Watermill retry middleware, which would duplicate attempts outside a lease.
 	return nil
 }
 

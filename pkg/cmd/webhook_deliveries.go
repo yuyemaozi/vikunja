@@ -17,6 +17,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -67,18 +68,18 @@ var webhookDeliveriesRecoverCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Could not list pending webhook deliveries: %v\n", err)
 			os.Exit(1)
 		}
+		failures := 0
 		for _, record := range records {
-			session := db.NewAutocommitSession()
-			claimed, claimErr := models.ClaimWebhookDeliveryForRecovery(session, record.DeliveryID)
-			_ = session.Close()
-			if claimErr != nil || !claimed {
+			result := models.RunWebhookDelivery(context.Background(), record.DeliveryID, models.DeliveryModeRecover)
+			if result.Status == "error" || result.Status == "failed" {
+				failures++
+				fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", record.DeliveryID, result.Status)
 				continue
 			}
-			if err := models.AttemptWebhookDelivery(record.DeliveryID); err != nil {
-				fmt.Fprintf(os.Stderr, "Webhook delivery %s failed: %v\n", record.DeliveryID, err)
-				continue
-			}
-			fmt.Printf("Webhook delivery %s recovered\n", record.DeliveryID)
+			fmt.Printf("Webhook delivery %s %s\n", record.DeliveryID, result.Status)
+		}
+		if failures > 0 {
+			os.Exit(1)
 		}
 	},
 }
@@ -91,22 +92,17 @@ var webhookDeliveriesRetryCmd = &cobra.Command{
 		initialize.FullInitWithoutAsync()
 	},
 	Run: func(_ *cobra.Command, args []string) {
-		s := db.NewAutocommitSession()
-		requeued, err := models.RetryWebhookDelivery(s, args[0])
-		_ = s.Close()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Could not retry webhook delivery %s: %v\n", args[0], err)
+		result := models.RunWebhookDelivery(context.Background(), args[0], models.DeliveryModeRetry)
+		switch result.Status {
+		case "delivered", "cancelled", "already_resolved":
+			fmt.Printf("Webhook delivery %s %s\n", args[0], result.Status)
+		case "not_found", "busy":
+			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", args[0], result.Status)
+			os.Exit(2)
+		default:
+			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", args[0], result.Status)
 			os.Exit(1)
 		}
-		if !requeued {
-			fmt.Fprintf(os.Stderr, "Webhook delivery %s is not failed\n", args[0])
-			os.Exit(1)
-		}
-		if err := models.AttemptWebhookDelivery(args[0]); err != nil {
-			fmt.Fprintf(os.Stderr, "Webhook delivery %s is pending but delivery failed: %v\n", args[0], err)
-			os.Exit(1)
-		}
-		fmt.Printf("Webhook delivery %s requeued and delivered\n", args[0])
 	},
 }
 

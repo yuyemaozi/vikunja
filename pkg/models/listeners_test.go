@@ -760,10 +760,11 @@ func TestWebhookDeliveryListenerSkipsErrorReporting(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := message.NewMessage("test", payload)
-	err = (&WebhookDeliveryListener{}).Handle(msg)
+	require.NoError(t, (&WebhookDeliveryListener{}).Handle(msg))
 
-	require.Error(t, err)
-	assert.Equal(t, "true", msg.Metadata.Get(events.MetadataSkipErrorReporting))
+	persisted := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, WebhookDeliveryStatusPending, persisted.Status)
+	assert.Equal(t, "delivery_failed", persisted.LastErrorCode)
 }
 
 // Existing rows must follow the task's done state into and out of the view's done bucket.
