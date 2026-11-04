@@ -1524,6 +1524,13 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 		return
 	}
 
+	if err := events.DispatchOnCommit(s, &ProjectDeletedEvent{
+		Project: fullProject,
+		Doer:    doerFromAuth(s, a),
+	}); err != nil {
+		return err
+	}
+
 	_, err = s.Where("project_id = ?", p.ID).Delete(&ProjectUser{})
 	if err != nil {
 		return
@@ -1553,13 +1560,6 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 	_, err = s.ID(p.ID).Delete(&Project{})
 	if err != nil {
 		return
-	}
-
-	if err := events.DispatchOnCommit(s, &ProjectDeletedEvent{
-		Project: fullProject,
-		Doer:    doerFromAuth(s, a),
-	}); err != nil {
-		return err
 	}
 
 	childProjects := []*Project{}

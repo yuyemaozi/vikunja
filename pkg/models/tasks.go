@@ -2201,15 +2201,15 @@ func (t *Task) Delete(s *xorm.Session, a web.Auth) (err error) {
 	// The deleted tag on Task.DeletedAt turns this into an update setting
 	// deleted_at. Must be a pointer: xorm tracks the after-delete closure that
 	// stamps DeletedAt in a map keyed by the bean, and a Task value is unhashable.
-	_, err = s.ID(t.ID).Delete(&Task{})
-	if err != nil {
-		return err
-	}
-
 	if err := events.DispatchOnCommit(s, &TaskDeletedEvent{
 		Task: fullTask,
 		Doer: doerFromAuth(s, a),
 	}); err != nil {
+		return err
+	}
+
+	_, err = s.ID(t.ID).Delete(&Task{})
+	if err != nil {
 		return err
 	}
 
