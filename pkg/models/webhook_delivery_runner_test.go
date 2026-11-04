@@ -407,3 +407,24 @@ func TestDeliverySendsPersistedBytes(t *testing.T) {
 	assert.Equal(t, "delivered", result.Status)
 	assert.Equal(t, body, received)
 }
+
+func TestDeliveryHTTPHonorsCallerDeadline(t *testing.T) {
+	allowLoopbackWebhook(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(5 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	record := newPendingDelivery(t, server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	result := RunWebhookDelivery(ctx, record.DeliveryID, DeliveryModeNormal)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 3*time.Second, "HTTP must use the caller context")
+	assert.NotEqual(t, "delivered", result.Status)
+	assert.Equal(t, WebhookDeliveryStatusPending, loadDelivery(t, record.DeliveryID).Status)
+}

@@ -286,7 +286,7 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 			}
 		}
 
-		completeSession, cancelComplete := newDeliveryPhase(ctx)
+		completeSession, cancelComplete := newDeliveryPhase(context.WithoutCancel(ctx))
 		completed, err := CompleteWebhookDelivery(completeSession, id, lease, deliveryNow(), outcome)
 		if err != nil || !completed {
 			_ = completeSession.Close()
