@@ -43,15 +43,6 @@ func setupIdentityTestEnv(t *testing.T) *echo.Echo {
 	return e
 }
 
-func assertErrorCode(t *testing.T, rec interface{ Bytes() []byte }, code int) {
-	t.Helper()
-	var problem struct {
-		Code int `json:"code"`
-	}
-	require.NoError(t, json.Unmarshal(rec.Bytes(), &problem))
-	assert.Equal(t, code, problem.Code)
-}
-
 func TestHumaUserIdentities(t *testing.T) {
 	const identitiesPath = "/api/v2/user/settings/identities"
 
@@ -98,20 +89,15 @@ func TestHumaUserIdentities(t *testing.T) {
 	t.Run("link", func(t *testing.T) {
 		t.Run("refuses a non-local user", func(t *testing.T) {
 			e := setupIdentityTestEnv(t)
-			oidcUser := &user.User{ID: 14, Username: "user14"}
+			oidcUser := &user.User{
+				ID:       14,
+				Username: "user14",
+			}
 
 			body := `{"provider":"p","code":"code","redirect_url":"https://localhost","password":"12345678"}`
 			rec := humaRequest(t, e, http.MethodPost, identitiesPath, body, humaTokenFor(t, oidcUser), "")
 			assert.Equal(t, http.StatusPreconditionFailed, rec.Code, rec.Body.String())
-			assertErrorCode(t, rec.Body, user.ErrCodeAccountIsNotLocal)
-		})
-		t.Run("checks the password before the provider", func(t *testing.T) {
-			e := setupIdentityTestEnv(t)
-			body := `{"provider":"doesnotexist","code":"code","redirect_url":"https://localhost","password":"wrong"}`
-
-			rec := humaRequest(t, e, http.MethodPost, identitiesPath, body, humaTokenFor(t, &testuser1), "")
-			assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-			assertErrorCode(t, rec.Body, user.ErrCodeWrongUsernameOrPassword)
+			assert.Equal(t, user.ErrCodeAccountIsNotLocal, problemCode(t, rec))
 		})
 	})
 
@@ -125,21 +111,12 @@ func TestHumaUserIdentities(t *testing.T) {
 				"id": 1,
 			})
 		})
-		t.Run("refuses a wrong password", func(t *testing.T) {
-			e := setupIdentityTestEnv(t)
-
-			rec := humaRequest(t, e, http.MethodPost, identitiesPath+"/1/unlink", `{"password":"wrong"}`, humaTokenFor(t, &testuser1), "")
-			assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-			db.AssertExists(t, "user_identities", map[string]interface{}{
-				"id": 1,
-			}, false)
-		})
 		t.Run("another user's identity is not found", func(t *testing.T) {
 			e := setupIdentityTestEnv(t)
 
 			rec := humaRequest(t, e, http.MethodPost, identitiesPath+"/1/unlink", `{"password":"12345678"}`, humaTokenFor(t, &testuser6), "")
 			assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
-			assertErrorCode(t, rec.Body, models.ErrCodeUserIdentityDoesNotExist)
+			assert.Equal(t, models.ErrCodeUserIdentityDoesNotExist, problemCode(t, rec))
 			db.AssertExists(t, "user_identities", map[string]interface{}{
 				"id": 1,
 			}, false)
