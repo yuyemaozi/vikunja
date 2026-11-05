@@ -66,11 +66,13 @@ func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
 	require.NoError(t, x.Sync2(&legacyWebhookDelivery20261104000100{}))
 
 	legacy := &legacyWebhookDelivery20261104000100{
-		DeliveryID: "11111111-1111-1111-1111-111111111111",
-		WebhookID:  1,
-		EventName:  "task.updated",
-		Payload:    "{}",
-		Status:     "pending",
+		DeliveryID:    "11111111-1111-1111-1111-111111111111",
+		WebhookID:     1,
+		EventName:     "task.updated",
+		Payload:       "{}",
+		Status:        "pending",
+		AttemptCount:  7,
+		LastErrorCode: "http_error",
 	}
 	_, err = x.Insert(legacy)
 	require.NoError(t, err)
@@ -88,6 +90,13 @@ func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
 	).Scan(&eventID)
 	require.NoError(t, err)
 	assert.Nil(t, eventID)
+
+	before, err := x.QueryString("SELECT * FROM webhook_deliveries ORDER BY delivery_id")
+	require.NoError(t, err)
+	require.NoError(t, migrateWebhookDeliveriesStaging20261104000100(x))
+	after, err := x.QueryString("SELECT * FROM webhook_deliveries ORDER BY delivery_id")
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "rerun must preserve every legacy field, including non-zero attempts")
 
 	insertStaged := func(deliveryID string) error {
 		_, err := x.Exec(

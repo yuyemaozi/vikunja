@@ -17,6 +17,7 @@
 package migration
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -25,13 +26,14 @@ import (
 )
 
 type legacyDelivery20261104000200 struct {
-	ID         int64     `xorm:"bigint autoincr not null unique pk"`
-	DeliveryID string    `xorm:"varchar(36) not null unique"`
-	WebhookID  int64     `xorm:"bigint not null"`
-	EventName  string    `xorm:"varchar(255) not null"`
-	Payload    string    `xorm:"JSON not null"`
-	Status     string    `xorm:"varchar(16) not null"`
-	CreatedAt  time.Time `xorm:"created not null"`
+	ID           int64     `xorm:"bigint autoincr not null unique pk"`
+	DeliveryID   string    `xorm:"varchar(36) not null unique"`
+	WebhookID    int64     `xorm:"bigint not null"`
+	EventName    string    `xorm:"varchar(255) not null"`
+	Payload      string    `xorm:"JSON not null"`
+	Status       string    `xorm:"varchar(16) not null"`
+	AttemptCount int       `xorm:"int not null default 0"`
+	CreatedAt    time.Time `xorm:"created not null"`
 }
 
 func (legacyDelivery20261104000200) TableName() string {
@@ -66,10 +68,11 @@ func TestWebhookMigration002ResetsLegacyProcessing(t *testing.T) {
 	statuses := []string{"pending", "failed", "delivered", "cancelled", "processing"}
 	for index, status := range statuses {
 		_, err := x.Exec(
-			"INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_name, payload, status, created_at) "+
-				"VALUES (?, 1, 'task.updated', '{}', ?, CURRENT_TIMESTAMP)",
+			"INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_name, payload, status, attempt_count, created_at) "+
+				"VALUES (?, 1, 'task.updated', '{}', ?, ?, CURRENT_TIMESTAMP)",
 			"00000000-0000-0000-0000-00000000000"+string(rune('0'+index)),
 			status,
+			7+index,
 		)
 		require.NoError(t, err)
 	}
@@ -88,6 +91,14 @@ func TestWebhookMigration002ResetsLegacyProcessing(t *testing.T) {
 	generation, err := x.Where("status = ?", "pending").Cols("retry_generation").Get(&legacyDelivery20261104000200{})
 	require.NoError(t, err)
 	assert.True(t, generation)
+	rows, err := x.QueryString("SELECT status, attempt_count, cycle_attempt_count, retry_generation FROM webhook_deliveries ORDER BY delivery_id")
+	require.NoError(t, err)
+	require.Len(t, rows, len(statuses))
+	for index, row := range rows {
+		assert.Equal(t, strconv.Itoa(7+index), row["attempt_count"])
+		assert.Equal(t, "0", row["cycle_attempt_count"])
+		assert.Equal(t, "0", row["retry_generation"])
+	}
 }
 
 func TestWebhookMigration002PreservesValidLeaseOnRerun(t *testing.T) {
