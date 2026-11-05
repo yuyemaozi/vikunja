@@ -27,7 +27,6 @@ import (
 
 	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/events"
-	"code.vikunja.io/api/pkg/user"
 
 	"github.com/google/uuid"
 	"xorm.io/xorm"
@@ -70,6 +69,16 @@ func RegisterWebhookOutbox() error {
 		}
 		webhookOutboxErr = events.RegisterTransactionalSink(names, stageWebhookDeliveries)
 	})
+	if webhookOutboxErr == nil && config.WebhooksEnabled.GetBool() {
+		// The catalogue and directed-source semantics must be ready before
+		// cron, CLI imports or HTTP writes; async listeners are only wakeups.
+		for _, event := range webhookSourceEvents {
+			RegisterEventForWebhook(event)
+		}
+		RegisterUserDirectedEventForWebhook(&TaskReminderFiredEvent{})
+		RegisterUserDirectedEventForWebhook(&TaskOverdueEvent{})
+		RegisterUserDirectedEventForWebhook(&TasksOverdueEvent{})
+	}
 	return webhookOutboxErr
 }
 
@@ -107,7 +116,7 @@ func StageWebhookDeliveries(
 	if err != nil {
 		return nil, err
 	}
-	isUserDirected := IsUserDirectedEvent(prepared.Name)
+	isUserDirected := isWebhookUserDirectedSource(prepared.Name)
 	if projectID == 0 && !isUserDirected {
 		return nil, nil
 	}
@@ -139,42 +148,24 @@ func StageWebhookDeliveries(
 		return nil, nil
 	}
 
-	event, doerID, err := reloadEventData(s, event, projectID)
+	event, _, err = reloadEventData(s, event, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	commonPayload, err := json.Marshal(event)
 	if err != nil {
 		return nil, err
 	}
 
 	results := make([]events.Event, 0, len(matchingWebhooks))
 	for _, webhook := range matchingWebhooks {
-		perWebhookEvent := make(map[string]interface{})
-		if err := decodeEventPayload(prepared.Payload, &perWebhookEvent); err != nil {
+		perWebhookEvent, authorized, err := snapshotForWebhook(s, commonPayload, projectID, webhook)
+		if err != nil {
 			return nil, err
 		}
-
-		if doerID != 0 {
-			canRead, err := reloadTaskInEvent(s, perWebhookEvent, webhook.CreatedByID)
-			if err != nil {
-				return nil, err
-			}
-			if !canRead {
-				continue
-			}
-		}
-
-		if _, has := perWebhookEvent["project"]; !has && webhook.ProjectID > 0 {
-			project, err := GetProjectSimpleByID(s, webhook.ProjectID)
-			if err != nil && !IsErrProjectDoesNotExist(err) {
-				return nil, err
-			}
-			if project != nil {
-				err = project.ReadOne(s, &user.User{ID: doerID})
-				if err != nil && !IsErrProjectDoesNotExist(err) {
-					return nil, err
-				}
-				if err == nil {
-					perWebhookEvent["project"] = project
-				}
-			}
+		if !authorized {
+			continue
 		}
 
 		payload := &WebhookPayload{
@@ -231,4 +222,13 @@ func decodeEventPayload(raw []byte, dst *map[string]interface{}) error {
 var insertDeliverySnapshot = func(s *xorm.Session, record *WebhookDeliveryRecord) error {
 	_, err := s.Insert(record)
 	return err
+}
+
+func isWebhookUserDirectedSource(name string) bool {
+	switch name {
+	case (&TaskReminderFiredEvent{}).Name(), (&TaskOverdueEvent{}).Name(), (&TasksOverdueEvent{}).Name():
+		return true
+	default:
+		return false
+	}
 }

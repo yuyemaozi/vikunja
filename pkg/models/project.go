@@ -1444,7 +1444,46 @@ func (p *Project) isDefaultProject(s *xorm.Session) (is bool, err error) {
 // @Failure 403 {object} web.HTTPError "The user does not have access to the project"
 // @Failure 500 {object} models.Message "Internal error"
 // @Router /projects/{id} [delete]
-func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
+func (p *Project) Delete(s *xorm.Session, a web.Auth) error {
+	if err := stageProjectDeletionTree(s, p.ID, a); err != nil {
+		return err
+	}
+	return p.deleteWithPreparedSnapshots(s, a)
+}
+
+// Freeze the whole subtree while all inherited ACLs still exist. No file or
+// object is destroyed before every transactional snapshot has succeeded.
+func stageProjectDeletionTree(s *xorm.Session, id int64, a web.Auth) error {
+	project, err := GetProjectSimpleByID(s, id)
+	if err != nil {
+		return err
+	}
+	isDefault, err := project.isDefaultProject(s)
+	if err != nil {
+		return err
+	}
+	if isDefault && project.OwnerID != a.GetID() {
+		return &ErrCannotDeleteDefaultProject{ProjectID: id}
+	}
+	if _, err := lockProjectViewsForPositionUpdate(s, id); err != nil {
+		return err
+	}
+	if err := events.DispatchOnCommit(s, &ProjectDeletedEvent{Project: project, Doer: doerFromAuth(s, a)}); err != nil {
+		return err
+	}
+	children := []*Project{}
+	if err := s.Where("parent_project_id = ?", id).Find(&children); err != nil {
+		return err
+	}
+	for _, child := range children {
+		if err := stageProjectDeletionTree(s, child.ID, a); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Project) deleteWithPreparedSnapshots(s *xorm.Session, a web.Auth) (err error) {
 	// The handler passes a stub without owner_id.
 	fullProject, err := GetProjectSimpleByID(s, p.ID)
 	if err != nil {
@@ -1524,13 +1563,6 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 		return
 	}
 
-	if err := events.DispatchOnCommit(s, &ProjectDeletedEvent{
-		Project: fullProject,
-		Doer:    doerFromAuth(s, a),
-	}); err != nil {
-		return err
-	}
-
 	_, err = s.Where("project_id = ?", p.ID).Delete(&ProjectUser{})
 	if err != nil {
 		return
@@ -1569,7 +1601,7 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 	}
 
 	for _, child := range childProjects {
-		err = child.Delete(s, a)
+		err = child.deleteWithPreparedSnapshots(s, a)
 		if err != nil {
 			return
 		}

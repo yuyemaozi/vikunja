@@ -322,3 +322,209 @@ func TestTaskDeleteRollsBackWhenSnapshotFails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, deliveryCount)
 }
+
+func TestOutboxRecursiveProjectDeletionKeepsInheritedSubscriptions(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
+	owner := &user.User{ID: 1}
+	parent := &Project{Title: "recursive parent"}
+	require.NoError(t, parent.Create(s, owner))
+	child := &Project{Title: "recursive child", ParentProjectID: &parent.ID}
+	require.NoError(t, child.Create(s, owner))
+	_, err := s.Insert(&ProjectUser{ProjectID: parent.ID, UserID: 2, Permission: PermissionWrite})
+	require.NoError(t, err)
+	allowed, _, err := child.CanRead(s, &user.User{ID: 2})
+	require.NoError(t, err)
+	require.True(t, allowed)
+	hook := &Webhook{ProjectID: parent.ID, CreatedByID: 2, Events: []string{"project.deleted"}, TargetURL: "https://example.invalid/hook"}
+	_, err = s.Insert(hook)
+	require.NoError(t, err)
+	require.NoError(t, parent.Delete(s, owner))
+	records := []*WebhookDeliveryRecord{}
+	require.NoError(t, s.Where("webhook_id=? AND event_name=?", hook.ID, "project.deleted").Find(&records))
+	require.Len(t, records, 2, "parent and child snapshots must exist before inherited ACLs disappear")
+	ids := map[int64]bool{}
+	for _, record := range records {
+		var envelope map[string]interface{}
+		require.NoError(t, decodeEventPayload(record.PayloadBody, &envelope))
+		data := envelope["data"].(map[string]interface{})
+		project := data["project"].(map[string]interface{})
+		ids[getIDAsInt64(project["id"])] = true
+	}
+	assert.True(t, ids[parent.ID])
+	assert.True(t, ids[child.ID])
+	require.NoError(t, s.Commit())
+}
+
+func TestTaskDeleteSnapshotRetainsOriginalBuckets(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
+	hook := &Webhook{ProjectID: 1, CreatedByID: 1, Events: []string{"task.deleted"}, TargetURL: "https://example.invalid/hook"}
+	_, err := s.Insert(hook)
+	require.NoError(t, err)
+	require.NoError(t, (&Task{ID: 1}).Delete(s, &user.User{ID: 1}))
+	record := &WebhookDeliveryRecord{}
+	has, err := s.Where("webhook_id=?", hook.ID).Get(record)
+	require.NoError(t, err)
+	require.True(t, has)
+	var envelope map[string]interface{}
+	require.NoError(t, decodeEventPayload(record.PayloadBody, &envelope))
+	data := envelope["data"].(map[string]interface{})
+	task := data["task"].(map[string]interface{})
+	buckets, _ := task["buckets"].([]interface{})
+	require.Len(t, buckets, 1, "snapshot must retain original view/bucket before deleting task relations")
+	assert.EqualValues(t, 1, getIDAsInt64(buckets[0].(map[string]interface{})["id"]))
+	remaining, err := s.Where("task_id=?", 1).Count(&TaskBucket{})
+	require.NoError(t, err)
+	assert.Zero(t, remaining)
+}
+
+func TestOutboxSnapshotsUseSubscriptionCreatorContext(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
+	actor := &user.User{ID: 1}
+	creator := &user.User{ID: 2}
+	project := &Project{Title: "creator scoped snapshot"}
+	require.NoError(t, project.Create(s, actor))
+	_, err := s.Insert(&ProjectUser{ProjectID: project.ID, UserID: creator.ID, Permission: PermissionWrite})
+	require.NoError(t, err)
+	task := &Task{Title: "creator scoped task", ProjectID: project.ID}
+	require.NoError(t, task.Create(s, actor))
+	require.NoError(t, addToFavorites(s, project.ID, actor, FavoriteKindProject))
+	require.NoError(t, addToFavorites(s, task.ID, creator, FavoriteKindTask))
+	creatorSubscription := &Subscription{EntityType: SubscriptionEntityProject, EntityID: project.ID, UserID: creator.ID}
+	_, err = s.Insert(creatorSubscription)
+	require.NoError(t, err)
+	hook := &Webhook{ProjectID: project.ID, CreatedByID: creator.ID, TargetURL: "https://example.invalid/hook", Events: []string{(&TaskUpdatedEvent{}).Name(), (&ProjectUpdatedEvent{}).Name(), (&TaskReminderFiredEvent{}).Name()}}
+	_, err = s.Insert(hook)
+	require.NoError(t, err)
+	for _, event := range []events.Event{
+		&TaskUpdatedEvent{Task: task, Doer: actor},
+		&ProjectUpdatedEvent{Project: &Project{ID: project.ID}, Doer: actor},
+		&TaskReminderFiredEvent{Task: task, User: actor, Project: project},
+	} {
+		require.NoError(t, events.DispatchOnCommit(s, event))
+	}
+	records := []*WebhookDeliveryRecord{}
+	require.NoError(t, s.Where("webhook_id=?", hook.ID).Find(&records))
+	require.Len(t, records, 3)
+	for _, record := range records {
+		var body map[string]interface{}
+		require.NoError(t, decodeEventPayload(record.PayloadBody, &body))
+		data := body["data"].(map[string]interface{})
+		snapshot := data["project"].(map[string]interface{})
+		assert.Equal(t, false, snapshot["is_favorite"], record.EventName+" must not contain actor's personal project favorite")
+		subscription, ok := snapshot["subscription"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, creatorSubscription.ID, getIDAsInt64(subscription["id"]))
+		views, _ := snapshot["views"].([]interface{})
+		assert.NotEmpty(t, views, record.EventName+" must include complete project views")
+		if taskData, ok := data["task"].(map[string]interface{}); ok {
+			assert.Equal(t, true, taskData["is_favorite"], record.EventName+" must use creator's task favorite even without a doer")
+		}
+	}
+}
+
+func TestOutboxAncestorSubscriptionKeepsSourceProject(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
+	owner := &user.User{ID: 1}
+	parent := &Project{Title: "ancestor subscription"}
+	require.NoError(t, parent.Create(s, owner))
+	child := &Project{Title: "event source", ParentProjectID: &parent.ID}
+	require.NoError(t, child.Create(s, owner))
+	task := &Task{Title: "child task", ProjectID: child.ID}
+	require.NoError(t, task.Create(s, owner))
+	hook := &Webhook{ProjectID: parent.ID, CreatedByID: 1, Events: []string{"task.updated"}, TargetURL: "https://example.invalid/hook"}
+	_, err := s.Insert(hook)
+	require.NoError(t, err)
+	require.NoError(t, events.DispatchOnCommit(s, &TaskUpdatedEvent{Task: task, Doer: owner}))
+	record := &WebhookDeliveryRecord{}
+	has, err := s.Where("webhook_id=?", hook.ID).Get(record)
+	require.NoError(t, err)
+	require.True(t, has)
+	var body map[string]interface{}
+	require.NoError(t, decodeEventPayload(record.PayloadBody, &body))
+	project := body["data"].(map[string]interface{})["project"].(map[string]interface{})
+	assert.Equal(t, child.ID, getIDAsInt64(project["id"]))
+}
+
+func TestOutboxSnapshotPreservesLargeTaskID(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
+	const id int64 = 9007199254740993
+	task := &Task{ID: id, Index: 99999, ProjectID: 1, CreatedByID: 1, Title: "large integer fixture", UID: "large-integer-fixture"}
+	_, err := s.Insert(task)
+	require.NoError(t, err)
+	hook := &Webhook{ProjectID: 1, CreatedByID: 1, Events: []string{"task.updated"}, TargetURL: "https://example.invalid/hook"}
+	_, err = s.Insert(hook)
+	require.NoError(t, err)
+	require.NoError(t, events.DispatchOnCommit(s, &TaskUpdatedEvent{Task: task, Doer: &user.User{ID: 1}}))
+	record := &WebhookDeliveryRecord{}
+	has, err := s.Where("webhook_id=?", hook.ID).Get(record)
+	require.NoError(t, err)
+	require.True(t, has)
+	var body map[string]interface{}
+	require.NoError(t, decodeEventPayload(record.PayloadBody, &body))
+	data := body["data"].(map[string]interface{})["task"].(map[string]interface{})
+	number, ok := data["id"].(json.Number)
+	require.True(t, ok)
+	got, err := number.Int64()
+	require.NoError(t, err)
+	assert.Equal(t, id, got)
+}
+
+func TestOutboxOverdueBatchFreezesPersonalCreatorContext(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	require.NoError(t, RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	events.BindRequestMeta(s, context.Background())
+	defer events.CleanupPending(s)
+	owner := &user.User{ID: 1}
+	favorite, err := isFavorite(s, 1, owner, FavoriteKindTask)
+	require.NoError(t, err)
+	if !favorite {
+		require.NoError(t, addToFavorites(s, 1, owner, FavoriteKindTask))
+	}
+	personal := &Webhook{UserID: 1, CreatedByID: 1, Events: []string{"tasks.overdue"}, TargetURL: "https://example.invalid/hook"}
+	_, err = s.Insert(personal)
+	require.NoError(t, err)
+	projectHook := &Webhook{ProjectID: 1, CreatedByID: 1, Events: []string{"tasks.overdue"}, TargetURL: "https://example.invalid/hook"}
+	_, err = s.Insert(projectHook)
+	require.NoError(t, err)
+	require.NoError(t, events.DispatchOnCommit(s, &TasksOverdueEvent{User: owner, Tasks: []*Task{{ID: 1, ProjectID: 1}}, Projects: map[int64]*Project{1: {ID: 1}}}))
+	records := []*WebhookDeliveryRecord{}
+	require.NoError(t, s.In("webhook_id", []int64{personal.ID, projectHook.ID}).Find(&records))
+	require.Len(t, records, 1, "a multi-project user-directed batch matches only the recipient's personal subscription")
+	assert.Equal(t, personal.ID, records[0].WebhookID)
+	var body map[string]interface{}
+	require.NoError(t, decodeEventPayload(records[0].PayloadBody, &body))
+	data := body["data"].(map[string]interface{})
+	tasks := data["tasks"].([]interface{})
+	require.Len(t, tasks, 1)
+	assert.Equal(t, true, tasks[0].(map[string]interface{})["is_favorite"])
+	projects := data["projects"].(map[string]interface{})
+	views, _ := projects["1"].(map[string]interface{})["views"].([]interface{})
+	assert.NotEmpty(t, views)
+}

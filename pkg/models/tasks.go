@@ -2192,6 +2192,13 @@ func (t *Task) Delete(s *xorm.Session, a web.Auth) (err error) {
 		return
 	}
 
+	if err := events.DispatchOnCommit(s, &TaskDeletedEvent{
+		Task: fullTask,
+		Doer: doerFromAuth(s, a),
+	}); err != nil {
+		return err
+	}
+
 	// Bucket and position rows are removed right away because bucket counts
 	// don't join the tasks table and would leak soft-deleted tasks; the heal
 	// routines re-create them on restore. All other related data is kept until
@@ -2209,12 +2216,6 @@ func (t *Task) Delete(s *xorm.Session, a web.Auth) (err error) {
 	// The deleted tag on Task.DeletedAt turns this into an update setting
 	// deleted_at. Must be a pointer: xorm tracks the after-delete closure that
 	// stamps DeletedAt in a map keyed by the bean, and a Task value is unhashable.
-	if err := events.DispatchOnCommit(s, &TaskDeletedEvent{
-		Task: fullTask,
-		Doer: doerFromAuth(s, a),
-	}); err != nil {
-		return err
-	}
 
 	_, err = s.ID(t.ID).Delete(&Task{})
 	if err != nil {
