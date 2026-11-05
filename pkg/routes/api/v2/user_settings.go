@@ -234,6 +234,7 @@ func runUserAction(ctx context.Context, action func(*xorm.Session, *user.User) e
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	defer events.CleanupPending(s)
 

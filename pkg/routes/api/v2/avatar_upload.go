@@ -81,6 +81,7 @@ func avatarUpload(ctx context.Context, in *avatarUploadInput) (*avatarUploadBody
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	defer events.CleanupPending(s)
 

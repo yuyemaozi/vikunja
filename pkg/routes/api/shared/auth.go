@@ -50,6 +50,7 @@ type UserRegister struct {
 // validation; both v1 and v2 share this body.
 func RegisterUser(ctx context.Context, in *UserRegister) (*user.User, error) {
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	// Discards events queued during a rolled-back transaction; a no-op once
 	// DispatchPending has run.
@@ -99,6 +100,7 @@ func CommitRegistration(ctx context.Context, s *xorm.Session) error {
 // account, missing/invalid TOTP) so both APIs surface them identically.
 func AuthenticateUserCredentials(ctx context.Context, login *user.Login) (*user.User, error) {
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	// Discards events queued during a rolled-back transaction (e.g. LDAP user
 	// creation); a no-op once DispatchPending has run.
@@ -218,6 +220,7 @@ func LogoutSession(sid string) (endSessionURL string, err error) {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, context.Background())
 	defer s.Close()
 	defer events.CleanupPending(s)
 
@@ -257,6 +260,7 @@ func LogoutSession(sid string) (endSessionURL string, err error) {
 // used after a reset. Shared by v1 and v2.
 func ResetPassword(reset *user.PasswordReset) error {
 	s := db.NewSession()
+	events.BindRequestMeta(s, context.Background())
 	defer s.Close()
 	defer events.CleanupPending(s)
 

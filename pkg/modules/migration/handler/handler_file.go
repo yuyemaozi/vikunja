@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +58,11 @@ func RegisterFileMigrator(factory func() migration.FileMigrator) {
 // export runs for minutes, far longer than a reverse proxy will hold a request
 // open, and a client that gives up waiting cannot abort the import it started.
 func StartFileMigration(ms migration.FileMigrator, u *user2.User, file io.ReaderAt, size int64, options []byte) error {
+	return StartFileMigrationWithContext(context.Background(), ms, u, file, size, options)
+}
+
+// StartFileMigrationWithContext preserves the HTTP request metadata in the queued job.
+func StartFileMigrationWithContext(ctx context.Context, ms migration.FileMigrator, u *user2.User, file io.ReaderAt, size int64, options []byte) error {
 	// The listener applies these again on its own instance; doing it here too
 	// turns an unusable config into a failed request instead of a failed job.
 	if err := applyMigratorOptions(ms, options); err != nil {
@@ -80,7 +86,7 @@ func StartFileMigration(ms migration.FileMigrator, u *user2.User, file io.Reader
 		return err
 	}
 
-	if err := events.Dispatch(&FileMigrationRequestedEvent{
+	if err := events.DispatchWithContext(ctx, &FileMigrationRequestedEvent{
 		User:              u,
 		MigratorKind:      ms.Name(),
 		MigrationStatusID: status.ID,
@@ -138,7 +144,7 @@ func (fw *FileMigratorWeb) Migrate(c *echo.Context) error {
 	}
 	defer src.Close()
 
-	if err := StartFileMigration(ms, user, src, file.Size, nil); err != nil {
+	if err := StartFileMigrationWithContext(c.Request().Context(), ms, user, src, file.Size, nil); err != nil {
 		return err
 	}
 

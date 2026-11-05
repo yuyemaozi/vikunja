@@ -92,7 +92,7 @@ func migrationMigrate(ctx context.Context, factory func() migration.Migrator, bo
 		return nil, huma.Error400BadRequest("invalid migration payload", err)
 	}
 
-	if err := migrationHandler.StartMigration(ms, u); err != nil {
+	if err := migrationHandler.StartMigrationWithContext(ctx, ms, u); err != nil {
 		return nil, translateDomainError(err)
 	}
 

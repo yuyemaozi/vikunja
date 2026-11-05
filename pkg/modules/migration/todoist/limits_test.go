@@ -17,6 +17,7 @@
 package todoist
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,7 +69,7 @@ func TestMigrateStopsAtItemLimit(t *testing.T) {
 	config.MigrationMaxItems.Set(5)
 	t.Cleanup(func() { config.MigrationMaxItems.Set(100000) })
 
-	err := (&Migration{Code: "code"}).Migrate(&user.User{ID: 1})
+	err := (&Migration{Code: "code"}).Migrate(context.Background(), &user.User{ID: 1})
 	var limitErr *migration.ErrImportItemLimitExceeded
 	require.ErrorAs(t, err, &limitErr)
 }
@@ -79,6 +80,6 @@ func TestMigrateRejectsOversizedResponse(t *testing.T) {
 	migration.MaxResponseBytes = 1024
 	t.Cleanup(func() { migration.MaxResponseBytes = prevMax })
 
-	err := (&Migration{Code: "code"}).Migrate(&user.User{ID: 1})
+	err := (&Migration{Code: "code"}).Migrate(context.Background(), &user.User{ID: 1})
 	require.ErrorIs(t, err, migration.ErrResponseTooLarge)
 }

@@ -19,6 +19,7 @@ package ticktick
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/csv"
 	"errors"
 	"io"
@@ -414,7 +415,7 @@ func linesToSkipBeforeHeader(file io.ReaderAt, size int64) (int, error) {
 // @Success 200 {object} models.Message "A message telling you everything was migrated successfully."
 // @Failure 500 {object} models.Message "Internal server error"
 // @Router /migration/ticktick/migrate [put]
-func (m *Migrator) Migrate(user *user.User, file io.ReaderAt, size int64) error {
+func (m *Migrator) Migrate(ctx context.Context, user *user.User, file io.ReaderAt, size int64) error {
 	if size == 0 {
 		return &migration.ErrFileIsEmpty{}
 	}
@@ -474,7 +475,7 @@ func (m *Migrator) Migrate(user *user.User, file io.ReaderAt, size int64) error 
 
 	vikunjaTasks := convertTickTickToVikunja(allTasks)
 
-	return migration.InsertFromStructure(vikunjaTasks, user)
+	return migration.InsertFromStructureWithContext(ctx, vikunjaTasks, user)
 }
 
 // isValidCSV performs a basic check to determine if the content looks like a CSV file

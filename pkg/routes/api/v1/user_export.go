@@ -82,11 +82,14 @@ func RequestUserDataExport(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	events.BindRequestMeta(s, c.Request().Context())
 	defer s.Close()
+	defer events.CleanupPending(s)
 
-	events.DispatchOnCommit(s, &models.UserDataExportRequestedEvent{
-		User: u,
-	})
+	if err := events.DispatchOnCommit(s, &models.UserDataExportRequestedEvent{User: u}); err != nil {
+		_ = s.Rollback()
+		return err
+	}
 
 	err = s.Commit()
 	if err != nil {

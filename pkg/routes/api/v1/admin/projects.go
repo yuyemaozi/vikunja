@@ -62,6 +62,8 @@ func PatchProjectOwner(c *echo.Context) error {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, c.Request().Context())
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	p, err := models.ReassignProjectOwner(s, doer, id, body.OwnerID)

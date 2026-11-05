@@ -168,6 +168,8 @@ func taskAttachmentsUpload(ctx context.Context, in *taskAttachmentUploadInput) (
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	formFiles := in.RawBody.Data().Files

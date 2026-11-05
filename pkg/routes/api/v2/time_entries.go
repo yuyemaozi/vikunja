@@ -143,6 +143,8 @@ func timeEntriesTimerStop(ctx context.Context, _ *struct{}) (*singleBody[models.
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	entry, err := models.StopRunningTimer(s, a)

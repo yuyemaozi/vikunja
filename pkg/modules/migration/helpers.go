@@ -59,12 +59,22 @@ func MaxDownloadSize() int64 {
 }
 
 func DownloadFile(url string) (*bytes.Buffer, error) {
-	return DownloadFileWithHeadersLimited(utils.NewSSRFSafeHTTPClient(), url, nil, MaxDownloadSize())
+	return DownloadFileContext(context.Background(), url)
+}
+
+// DownloadFileContext carries the caller context to the HTTP request.
+func DownloadFileContext(ctx context.Context, url string) (*bytes.Buffer, error) {
+	return DownloadFileWithHeadersLimitedContext(ctx, utils.NewSSRFSafeHTTPClient(), url, nil, MaxDownloadSize())
 }
 
 // Pass a client with a redirect policy when the headers carry credentials: go replays them across hosts.
 func DownloadFileWithHeadersLimited(hc *http.Client, url string, headers http.Header, maxBytes int64) (*bytes.Buffer, error) {
-	resp, err := getFile(hc, url, headers)
+	return DownloadFileWithHeadersLimitedContext(context.Background(), hc, url, headers, maxBytes)
+}
+
+// DownloadFileWithHeadersLimitedContext carries the caller context to the HTTP request.
+func DownloadFileWithHeadersLimitedContext(ctx context.Context, hc *http.Client, url string, headers http.Header, maxBytes int64) (*bytes.Buffer, error) {
+	resp, err := getFile(ctx, hc, url, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -86,8 +96,8 @@ func DownloadFileWithHeadersLimited(hc *http.Client, url string, headers http.He
 	return buf, nil
 }
 
-func getFile(hc *http.Client, url string, headers http.Header) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+func getFile(ctx context.Context, hc *http.Client, url string, headers http.Header) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -103,19 +113,34 @@ func getFile(hc *http.Client, url string, headers http.Header) (*http.Response, 
 
 // DoPost makes a form encoded post request
 func DoPost(url string, form url.Values) (resp *http.Response, err error) {
-	return DoPostWithHeaders(url, form, map[string]string{})
+	return DoPostContext(context.Background(), url, form)
+}
+
+// DoPostContext carries the caller context to the HTTP request.
+func DoPostContext(ctx context.Context, url string, form url.Values) (resp *http.Response, err error) {
+	return DoPostWithHeadersContext(ctx, url, form, map[string]string{})
 }
 
 // DoGetWithHeaders makes an HTTP GET request with custom headers
 func DoGetWithHeaders(urlStr string, headers map[string]string) (resp *http.Response, err error) {
-	return DoGetWithClient(utils.NewSSRFSafeHTTPClient(), urlStr, headers)
+	return DoGetWithHeadersContext(context.Background(), urlStr, headers)
+}
+
+// DoGetWithHeadersContext carries the caller context to the HTTP request.
+func DoGetWithHeadersContext(ctx context.Context, urlStr string, headers map[string]string) (resp *http.Response, err error) {
+	return DoGetWithClientContext(ctx, utils.NewSSRFSafeHTTPClient(), urlStr, headers)
 }
 
 // DoGetWithClient is DoGetWithHeaders with a caller-provided client, e.g. one with a redirect policy
 // so credential headers are not replayed across hosts.
 func DoGetWithClient(hc *http.Client, urlStr string, headers map[string]string) (resp *http.Response, err error) {
+	return DoGetWithClientContext(context.Background(), hc, urlStr, headers)
+}
+
+// DoGetWithClientContext carries the caller context to the HTTP request.
+func DoGetWithClientContext(ctx context.Context, hc *http.Client, urlStr string, headers map[string]string) (resp *http.Response, err error) {
 	err = utils.RetryWithBackoff("HTTP GET "+urlStr, func() error {
-		req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, urlStr, nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if reqErr != nil {
 			return reqErr
 		}
@@ -154,10 +179,15 @@ func DoGetWithClient(hc *http.Client, urlStr string, headers map[string]string) 
 
 // DoPostWithHeaders does an api request and allows to pass in arbitrary headers
 func DoPostWithHeaders(urlStr string, form url.Values, headers map[string]string) (resp *http.Response, err error) {
+	return DoPostWithHeadersContext(context.Background(), urlStr, form, headers)
+}
+
+// DoPostWithHeadersContext carries the caller context to the HTTP request.
+func DoPostWithHeadersContext(ctx context.Context, urlStr string, form url.Values, headers map[string]string) (resp *http.Response, err error) {
 	hc := utils.NewSSRFSafeHTTPClient()
 
 	err = utils.RetryWithBackoff("HTTP POST "+urlStr, func() error {
-		req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodPost, urlStr, strings.NewReader(form.Encode()))
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, urlStr, strings.NewReader(form.Encode()))
 		if reqErr != nil {
 			return reqErr
 		}

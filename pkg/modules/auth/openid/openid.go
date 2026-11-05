@@ -244,6 +244,7 @@ func AuthenticateCallback(ctx context.Context, cb *Callback, providerKey string)
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	// Discards events queued during a rolled-back transaction (e.g. user
 	// creation); a no-op once DispatchPending has run.

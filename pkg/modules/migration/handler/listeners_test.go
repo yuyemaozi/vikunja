@@ -18,6 +18,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,7 +140,7 @@ func (m *stubFileMigrator) SetOptions(options []byte) error {
 	return nil
 }
 
-func (m *stubFileMigrator) Migrate(_ *user.User, file io.ReaderAt, size int64) error {
+func (m *stubFileMigrator) Migrate(_ context.Context, _ *user.User, file io.ReaderAt, size int64) error {
 	m.state.runs++
 	content := make([]byte, size)
 	if _, err := file.ReadAt(content, 0); err != nil {

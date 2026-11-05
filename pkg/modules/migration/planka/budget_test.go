@@ -17,6 +17,7 @@
 package planka
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,7 +56,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		c, _ := newBudgetClient(t)
 		c.budget.maxAggregateBytes = 100
 
-		_, err := fetchAll(c)
+		_, err := fetchAll(context.Background(), c)
 		assertBudgetErr(t, err)
 	})
 
@@ -73,7 +74,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		out := &struct {
 			Items []string `json:"items"`
 		}{}
-		err = c.get("/api/projects", nil, out)
+		err = c.get(context.Background(), "/api/projects", nil, out)
 		assertBudgetErr(t, err)
 	})
 
@@ -92,7 +93,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		require.NoError(t, err)
 		c.budget.maxResponseBytes = 256
 
-		_, err = fetchBoard(c, "1")
+		_, err = fetchBoard(context.Background(), c, "1")
 		assertBudgetErr(t, err)
 	})
 
@@ -108,7 +109,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		c.budget.maxResponseBytes = 1024
 		c.budget.maxAggregateBytes = 64
 
-		err = c.get("/api/projects", nil, &projectsResponse{})
+		err = c.get(context.Background(), "/api/projects", nil, &projectsResponse{})
 		assertBudgetErr(t, err)
 	})
 
@@ -116,7 +117,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		c, _ := newBudgetClient(t)
 		c.budget.maxEntities = 3
 
-		_, err := fetchAll(c)
+		_, err := fetchAll(context.Background(), c)
 		assertBudgetErr(t, err)
 	})
 
@@ -133,7 +134,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		c.budget.maxEntities = 1
 		out := &projectsResponse{}
 
-		err = c.get("/api/projects", nil, out)
+		err = c.get(context.Background(), "/api/projects", nil, out)
 		assertBudgetErr(t, err)
 		assert.Empty(t, out.Items)
 		assert.Zero(t, c.budget.entities)
@@ -175,7 +176,7 @@ func TestPlankaJobBudget(t *testing.T) {
 			require.NoError(t, err)
 			c.budget.maxEntities = 1
 
-			_, err = fetchBoard(c, "1")
+			_, err = fetchBoard(context.Background(), c, "1")
 			assertBudgetErr(t, err)
 			select {
 			case path := <-requestedPath:
@@ -198,7 +199,7 @@ func TestPlankaJobBudget(t *testing.T) {
 		require.NoError(t, err)
 		c.budget.maxRequests = 2
 
-		_, err = fetchAll(c)
+		_, err = fetchAll(context.Background(), c)
 		assertBudgetErr(t, err)
 		assert.LessOrEqual(t, attempts, 2, "the request budget must stop outbound attempts")
 	})
@@ -207,18 +208,18 @@ func TestPlankaJobBudget(t *testing.T) {
 		c, _ := newBudgetClient(t)
 		c.budget.maxAttachmentBytes = 4 * 1024 * 1024
 
-		buf, err := c.download("7", "big.bin")
+		buf, err := c.download(context.Background(), "7", "big.bin")
 		require.NoError(t, err)
 		assert.Equal(t, 3*1024*1024, buf.Len())
 
-		_, err = c.download("7", "big.bin")
+		_, err = c.download(context.Background(), "7", "big.bin")
 		assertBudgetErr(t, err)
 	})
 
 	t.Run("ordinary attachment failures are still skipped, not budget errors", func(t *testing.T) {
 		c, _ := newBudgetClient(t)
 
-		_, err := c.download("missing", "404.bin")
+		_, err := c.download(context.Background(), "missing", "404.bin")
 		require.Error(t, err)
 		var budgetErr *ErrImportBudgetExceeded
 		assert.NotErrorAs(t, err, &budgetErr, "a missing attachment is an ordinary failure, got %v", err)
@@ -236,12 +237,12 @@ func TestPlankaJobBudget(t *testing.T) {
 		c, _ := newBudgetClient(t)
 		c.budget.maxAttachmentBytes = 2 * 1024 * 1024
 
-		_, err := c.download("7", "big.bin")
+		_, err := c.download(context.Background(), "7", "big.bin")
 		var tooLarge files.ErrFileIsTooLarge
 		require.ErrorAs(t, err, &tooLarge)
 		assert.Positive(t, c.budget.attachmentBytes)
 
-		_, err = c.download("7", "big.bin")
+		_, err = c.download(context.Background(), "7", "big.bin")
 		assertBudgetErr(t, err)
 		assert.NotErrorAs(t, err, &tooLarge)
 	})
@@ -249,7 +250,7 @@ func TestPlankaJobBudget(t *testing.T) {
 	t.Run("a complete small import still works within the budget", func(t *testing.T) {
 		c, _ := newBudgetClient(t)
 
-		data, err := fetchAll(c)
+		data, err := fetchAll(context.Background(), c)
 		require.NoError(t, err)
 		require.NotEmpty(t, data.Projects)
 		assert.LessOrEqual(t, c.budget.responseBytes, c.budget.maxAggregateBytes)

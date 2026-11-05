@@ -105,6 +105,8 @@ func confirmExportPassword(ctx context.Context, s *xorm.Session, password string
 
 func userExportRequest(ctx context.Context, in *userExportPasswordBody) (*messageBody, error) {
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	u, err := confirmExportPassword(ctx, s, in.Body.Password)
@@ -113,7 +115,10 @@ func userExportRequest(ctx context.Context, in *userExportPasswordBody) (*messag
 		return nil, err
 	}
 
-	events.DispatchOnCommit(s, &models.UserDataExportRequestedEvent{User: u})
+	if err := events.DispatchOnCommit(s, &models.UserDataExportRequestedEvent{User: u}); err != nil {
+		_ = s.Rollback()
+		return nil, translateDomainError(err)
+	}
 
 	if err := s.Commit(); err != nil {
 		_ = s.Rollback()

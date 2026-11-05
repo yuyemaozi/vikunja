@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"code.vikunja.io/api/pkg/events"
@@ -72,6 +73,11 @@ func (mw *MigrationWeb) AuthURL(c *echo.Context) error {
 
 // StartMigration validates credentials and dispatches a migration while holding its claim.
 func StartMigration(ms migration.Migrator, u *user2.User) error {
+	return StartMigrationWithContext(context.Background(), ms, u)
+}
+
+// StartMigrationWithContext preserves the HTTP request metadata in the queued job.
+func StartMigrationWithContext(ctx context.Context, ms migration.Migrator, u *user2.User) error {
 	if om, ok := ms.(migration.OAuthMigrator); ok {
 		if err := migration.ConsumeOAuthState(om, u.ID); err != nil {
 			return err
@@ -90,7 +96,7 @@ func StartMigration(ms migration.Migrator, u *user2.User) error {
 		}
 	}
 
-	if err := events.Dispatch(&MigrationRequestedEvent{
+	if err := events.DispatchWithContext(ctx, &MigrationRequestedEvent{
 		Migrator:          ms,
 		MigratorKind:      ms.Name(),
 		User:              u,
@@ -126,7 +132,7 @@ func (mw *MigrationWeb) Migrate(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "No or invalid model provided: "+err.Error()).Wrap(err)
 	}
 
-	if err := StartMigration(ms, user); err != nil {
+	if err := StartMigrationWithContext(c.Request().Context(), ms, user); err != nil {
 		return err
 	}
 

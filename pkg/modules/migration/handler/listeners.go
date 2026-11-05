@@ -17,6 +17,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,7 +117,7 @@ func (s *MigrationListener) Handle(msg *message.Message) (err error) {
 
 	ms := event.Migrator.(migration.Migrator)
 
-	m, err := migrateInListener(ms, event)
+	m, err := migrateInListener(migrationRequestContext(msg), ms, event)
 	if err != nil {
 		reportMigrationFailure(event.User, event.MigratorKind, ms, m, err)
 	}
@@ -168,7 +169,7 @@ func reportMigrationFailure(u *user2.User, migratorKind string, ms migration.Mig
 	}
 }
 
-func migrateInListener(ms migration.Migrator, event *MigrationRequestedEvent) (m *migration.Status, err error) {
+func migrateInListener(ctx context.Context, ms migration.Migrator, event *MigrationRequestedEvent) (m *migration.Status, err error) {
 	if event.MigrationStatusID == 0 {
 		// Events queued before claim support must acquire one during an upgrade.
 		m, err = migration.ClaimMigration(ms, event.User)
@@ -180,7 +181,7 @@ func migrateInListener(ms migration.Migrator, event *MigrationRequestedEvent) (m
 	}
 
 	return m, runMigration(event.User, ms, m, event.MigratorKind, "migration", func() error {
-		return ms.Migrate(event.User)
+		return ms.Migrate(ctx, event.User)
 	})
 }
 
@@ -248,7 +249,7 @@ func (s *FileMigrationListener) Handle(msg *message.Message) (err error) {
 	}
 	ms := factory()
 
-	m, err := importInListener(ms, event)
+	m, err := importInListener(migrationRequestContext(msg), ms, event)
 	if err != nil {
 		reportMigrationFailure(event.User, event.MigratorKind, ms, m, err)
 	}
@@ -256,7 +257,7 @@ func (s *FileMigrationListener) Handle(msg *message.Message) (err error) {
 	return nil // A retry would re-run a partially applied import, so the error is handled here.
 }
 
-func importInListener(ms migration.FileMigrator, event *FileMigrationRequestedEvent) (m *migration.Status, err error) {
+func importInListener(ctx context.Context, ms migration.FileMigrator, event *FileMigrationRequestedEvent) (m *migration.Status, err error) {
 	m, err = migration.GetMigrationStatusByID(event.MigrationStatusID)
 	if err != nil {
 		return &migration.Status{ID: event.MigrationStatusID}, fmt.Errorf("could not get migration status %d: %w", event.MigrationStatusID, err)
@@ -279,6 +280,26 @@ func importInListener(ms migration.FileMigrator, event *FileMigrationRequestedEv
 		}
 		defer closeFile()
 
-		return asImportFileError(ms.Migrate(event.User, file, size))
+		return asImportFileError(ms.Migrate(ctx, event.User, file, size))
 	})
+}
+
+// Rehydrate request metadata from the event envelope when crossing the queue.
+// Keep the message cancellation context and preserve the other request fields.
+func migrationRequestContext(msg *message.Message) context.Context {
+	ctx := msg.Context()
+	meta := events.RequestMeta{}
+	if existing := events.RequestMetaFromContext(ctx); existing != nil {
+		meta = *existing
+	}
+	if id := msg.Metadata.Get(events.MetadataKeyRequestID); id != "" {
+		meta.RequestID = id
+	}
+	if ip := msg.Metadata.Get(events.MetadataKeyIP); ip != "" {
+		meta.IP = ip
+	}
+	if agent := msg.Metadata.Get(events.MetadataKeyUserAgent); agent != "" {
+		meta.UserAgent = agent
+	}
+	return events.WithRequestMeta(ctx, &meta)
 }

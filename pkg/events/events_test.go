@@ -26,6 +26,7 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testEvent struct{}
@@ -40,7 +41,7 @@ func TestDispatchOnCommit(t *testing.T) {
 	// Use a simple key (in real use this is a *xorm.Session)
 	key := new(int)
 
-	DispatchOnCommit(key, &testEvent{})
+	require.NoError(t, DispatchOnCommit(key, &testEvent{}))
 
 	// Event should NOT be dispatched yet
 	assert.Equal(t, 0, CountDispatchedEvents("test.event"))
@@ -57,9 +58,9 @@ func TestDispatchOnCommitMultipleEvents(t *testing.T) {
 
 	key := new(int)
 
-	DispatchOnCommit(key, &testEvent{})
-	DispatchOnCommit(key, &testEvent{})
-	DispatchOnCommit(key, &testEvent{})
+	require.NoError(t, DispatchOnCommit(key, &testEvent{}))
+	require.NoError(t, DispatchOnCommit(key, &testEvent{}))
+	require.NoError(t, DispatchOnCommit(key, &testEvent{}))
 
 	assert.Equal(t, 0, CountDispatchedEvents("test.event"))
 
@@ -73,8 +74,8 @@ func TestCleanupPending(t *testing.T) {
 
 	key := new(int)
 
-	DispatchOnCommit(key, &testEvent{})
-	DispatchOnCommit(key, &testEvent{})
+	require.NoError(t, DispatchOnCommit(key, &testEvent{}))
+	require.NoError(t, DispatchOnCommit(key, &testEvent{}))
 
 	// Simulate rollback — discard events
 	CleanupPending(key)
@@ -111,7 +112,7 @@ func TestOnCommit(t *testing.T) {
 			calls = append(calls, 1)
 			return errors.New("failing callback must not stop the others")
 		})
-		DispatchOnCommit(key, &testEvent{})
+		require.NoError(t, DispatchOnCommit(key, &testEvent{}))
 		OnCommit(key, func() error {
 			calls = append(calls, 2)
 			return nil

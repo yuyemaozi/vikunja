@@ -80,6 +80,8 @@ func resetTransactionalSinks() {
 // BindRequestMeta stores the first request UUID for a pending transaction.
 // Missing or invalid metadata produces one transaction UUID; later bindings
 // never replace it.
+//
+//nolint:revive // Preserve the approved key-first transaction API.
 func BindRequestMeta(key any, ctx context.Context) {
 	queue := pendingQueue(key)
 	queue.mu.Lock()

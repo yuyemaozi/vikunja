@@ -168,6 +168,8 @@ func adminUsersList(ctx context.Context, in *ListParams) (*adminUserListBody, er
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	users, total, err := models.ListUsersAsAdmin(s, doer, in.Q, in.Page, in.PerPage)
@@ -200,6 +202,8 @@ func adminUsersCreate(ctx context.Context, in *struct{ Body models.CreateUserBod
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	newUser, err := models.CreateUserAsAdmin(s, doer, &in.Body)
@@ -271,6 +275,8 @@ func adminUsersPasswordResetEmail(ctx context.Context, in *struct {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 	if err := models.RequestPasswordResetAsAdmin(s, doer, in.ID); err != nil {
 		_ = s.Rollback()
@@ -306,6 +312,8 @@ func adminUsersDelete(ctx context.Context, in *struct {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 	if err := models.DeleteUserAsAdmin(s, doer, in.ID, mode); err != nil {
 		_ = s.Rollback()
@@ -330,6 +338,8 @@ func adminCommitUser(ctx context.Context, action func(s *xorm.Session, doer *use
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	target, err := action(s, doer)

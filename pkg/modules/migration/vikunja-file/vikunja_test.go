@@ -19,6 +19,7 @@ package vikunjafile
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"net/http"
 	"os"
 	"testing"
@@ -51,7 +52,7 @@ func TestVikunjaFileMigrator_Migrate(t *testing.T) {
 			t.Fatalf("Could not stat file: %s", err)
 		}
 
-		err = m.Migrate(u, f, s.Size())
+		err = m.Migrate(context.Background(), u, f, s.Size())
 		require.NoError(t, err)
 		db.AssertExists(t, "projects", map[string]interface{}{
 			"title":    "test project",
@@ -135,7 +136,7 @@ func TestVikunjaFileMigrator_Migrate(t *testing.T) {
 		u := &user.User{ID: 1}
 
 		reader := bytes.NewReader(zipBuf.Bytes())
-		err = m.Migrate(u, reader, int64(reader.Len()))
+		err = m.Migrate(context.Background(), u, reader, int64(reader.Len()))
 
 		// create_from_structure.go skips the oversized attachment via
 		// `continue`, so Migrate succeeds for the rest of the project.
@@ -174,7 +175,7 @@ func TestVikunjaFileMigrator_Migrate(t *testing.T) {
 		reader := bytes.NewReader(zipBuf.Bytes())
 
 		events.ClearDispatchedEvents()
-		require.NoError(t, m.Migrate(u, reader, int64(reader.Len())))
+		require.NoError(t, m.Migrate(context.Background(), u, reader, int64(reader.Len())))
 
 		s := db.NewSession()
 		defer s.Close()
@@ -211,7 +212,7 @@ func TestVikunjaFileMigrator_Migrate(t *testing.T) {
 			t.Fatalf("Could not stat file: %s", err)
 		}
 
-		err = m.Migrate(u, f, s.Size())
+		err = m.Migrate(context.Background(), u, f, s.Size())
 		require.Error(t, err)
 		var unsupported *migration.ErrImportFromUnsupportedVersion
 		require.ErrorAs(t, err, &unsupported)
@@ -231,7 +232,7 @@ func TestVikunjaFileMigrator_Migrate(t *testing.T) {
 		u := &user.User{ID: 1}
 		reader := bytes.NewReader(zipBuf.Bytes())
 
-		err = m.Migrate(u, reader, int64(reader.Len()))
+		err = m.Migrate(context.Background(), u, reader, int64(reader.Len()))
 		var noDataFile *migration.ErrNoDataFileInZip
 		require.ErrorAs(t, err, &noDataFile)
 		assert.Equal(t, http.StatusBadRequest, noDataFile.HTTPError().HTTPCode)

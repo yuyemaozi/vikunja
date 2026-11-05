@@ -71,6 +71,8 @@ func PatchStatus(c *echo.Context) error {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, c.Request().Context())
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	target, err := models.SetUserStatusAsAdmin(s, doer, id, newStatus)
@@ -124,6 +126,8 @@ func DeleteUser(c *echo.Context) error {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, c.Request().Context())
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	if err := models.DeleteUserAsAdmin(s, doer, id, mode); err != nil {

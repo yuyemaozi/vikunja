@@ -54,6 +54,7 @@ func adminInviteLinksCreate(ctx context.Context, in *struct{ Body models.CreateI
 		return nil, err
 	}
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	defer events.CleanupPending(s)
 	link, err := models.CreateInviteLinkAsAdmin(s, doer, &in.Body)
@@ -76,6 +77,7 @@ func adminInviteLinksDelete(ctx context.Context, in *struct {
 		return nil, err
 	}
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	defer events.CleanupPending(s)
 	if err := models.DeleteInviteLinkAsAdmin(s, doer, in.ID); err != nil {

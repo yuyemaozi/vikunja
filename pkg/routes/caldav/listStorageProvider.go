@@ -645,7 +645,7 @@ func (vcls *VikunjaCaldavProjectStorage) CreateResource(rpath, content string) (
 		return nil, err
 	}
 
-	events.DispatchPending(context.Background(), s)
+	events.DispatchPending(vcls.requestContext, s)
 
 	// Build up the proper response
 	rr := VikunjaProjectResourceAdapter{
@@ -837,7 +837,7 @@ func (vcls *VikunjaCaldavProjectStorage) UpdateResource(rpath, content string) (
 		return nil, err
 	}
 
-	events.DispatchPending(context.Background(), s)
+	events.DispatchPending(vcls.requestContext, s)
 
 	// base, not vTask: Update wrote back the Updated timestamp the etag is built from.
 	rr := VikunjaProjectResourceAdapter{
@@ -889,7 +889,7 @@ func (vcls *VikunjaCaldavProjectStorage) DeleteResource(_ string) error {
 		return err
 	}
 
-	events.DispatchPending(context.Background(), s)
+	events.DispatchPending(vcls.requestContext, s)
 
 	return nil
 }

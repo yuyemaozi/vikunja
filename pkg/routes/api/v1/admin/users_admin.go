@@ -69,6 +69,8 @@ func PatchAdmin(c *echo.Context) error {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, c.Request().Context())
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	target, err := models.SetUserAdminFlag(s, doer, id, *body.IsAdmin)

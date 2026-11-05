@@ -18,6 +18,7 @@ package todoist
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -340,7 +341,7 @@ func isDownloadableURL(rawURL string) bool {
 	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
-func convertTodoistToVikunja(sync *sync, doneItems map[string]*doneItem) (fullVikunjaHierachie []*models.ProjectWithTasksAndBuckets, err error) {
+func convertTodoistToVikunja(ctx context.Context, sync *sync, doneItems map[string]*doneItem) (fullVikunjaHierachie []*models.ProjectWithTasksAndBuckets, err error) {
 
 	var pseudoParentID int64 = 1
 
@@ -528,7 +529,7 @@ func convertTodoistToVikunja(sync *sync, doneItems map[string]*doneItem) (fullVi
 			}
 
 			// Download the attachment and put it in the file
-			buf, err := migration.DownloadFile(n.FileAttachment.FileURL)
+			buf, err := migration.DownloadFileContext(ctx, n.FileAttachment.FileURL)
 			if err != nil {
 				// A single broken attachment must not fail the whole migration
 				log.Errorf("[Todoist Migration] Could not download attachment of note %s from %s, skipping it. Error was: %s", n.ID, n.FileAttachment.FileURL, err)
@@ -585,7 +586,7 @@ func convertTodoistToVikunja(sync *sync, doneItems map[string]*doneItem) (fullVi
 	return
 }
 
-func getAccessTokenFromAuthToken(authToken string) (accessToken string, err error) {
+func getAccessTokenFromAuthToken(ctx context.Context, authToken string) (accessToken string, err error) {
 
 	form := url.Values{
 		"client_id":     []string{config.MigrationTodoistClientID.GetString()},
@@ -593,7 +594,7 @@ func getAccessTokenFromAuthToken(authToken string) (accessToken string, err erro
 		"code":          []string{authToken},
 		"redirect_uri":  []string{config.MigrationTodoistRedirectURL.GetString()},
 	}
-	resp, err := migration.DoPost(oauthTokenURL, form)
+	resp, err := migration.DoPostContext(ctx, oauthTokenURL, form)
 	if err != nil {
 		return
 	}
@@ -621,12 +622,12 @@ func getAccessTokenFromAuthToken(authToken string) (accessToken string, err erro
 // @Success 200 {object} models.Message "A message telling you everything was migrated successfully."
 // @Failure 500 {object} models.Message "Internal server error"
 // @Router /migration/todoist/migrate [post]
-func (m *Migration) Migrate(u *user.User) (err error) {
+func (m *Migration) Migrate(ctx context.Context, u *user.User) (err error) {
 
 	log.Debugf("[Todoist Migration] Starting migration for user %d", u.ID)
 
 	// 0. Get an api token from the obtained auth token
-	token, err := getAccessTokenFromAuthToken(m.Code)
+	token, err := getAccessTokenFromAuthToken(ctx, m.Code)
 	if err != nil {
 		return
 	}
@@ -648,7 +649,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 		"Authorization": "Bearer " + token,
 	}
 
-	resp, err := migration.DoPostWithHeaders(apiPrefix+"sync", form, bearerHeader)
+	resp, err := migration.DoPostWithHeadersContext(ctx, apiPrefix+"sync", form, bearerHeader)
 	if err != nil {
 		return
 	}
@@ -678,7 +679,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 			completedURL += "&cursor=" + url.QueryEscape(cursor)
 		}
 
-		resp, err = migration.DoGetWithHeaders(completedURL, bearerHeader)
+		resp, err = migration.DoGetWithHeadersContext(ctx, completedURL, bearerHeader)
 		if err != nil {
 			return
 		}
@@ -714,7 +715,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 			}
 
 			// need to get done item data using v1 API
-			resp, err = migration.DoGetWithHeaders(apiPrefix+"tasks/"+i.TaskID, bearerHeader)
+			resp, err = migration.DoGetWithHeadersContext(ctx, apiPrefix+"tasks/"+i.TaskID, bearerHeader)
 			if err != nil {
 				return
 			}
@@ -763,7 +764,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 			archivedURL += "?cursor=" + url.QueryEscape(cursor)
 		}
 
-		resp, err = migration.DoGetWithHeaders(archivedURL, bearerHeader)
+		resp, err = migration.DoGetWithHeadersContext(ctx, archivedURL, bearerHeader)
 		if err != nil {
 			return
 		}
@@ -797,7 +798,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 
 	// Project data is not included in the regular sync for archived projects, so we need to get all of those by hand
 	for _, p := range archivedProjects {
-		resp, err = migration.DoGetWithHeaders(apiPrefix+"projects/"+p.ID+"/full", bearerHeader)
+		resp, err = migration.DoGetWithHeadersContext(ctx, apiPrefix+"projects/"+p.ID+"/full", bearerHeader)
 		if err != nil {
 			return
 		}
@@ -825,7 +826,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 	log.Debugf("[Todoist Migration] Got all todoist user data for user %d", u.ID)
 	log.Debugf("[Todoist Migration] Start converting data for user %d", u.ID)
 
-	fullVikunjaHierachie, err := convertTodoistToVikunja(syncResponse, doneItems)
+	fullVikunjaHierachie, err := convertTodoistToVikunja(ctx, syncResponse, doneItems)
 	if err != nil {
 		return
 	}
@@ -833,7 +834,7 @@ func (m *Migration) Migrate(u *user.User) (err error) {
 	log.Debugf("[Todoist Migration] Done converting data for user %d", u.ID)
 	log.Debugf("[Todoist Migration] Start inserting data for user %d", u.ID)
 
-	err = migration.InsertFromStructure(fullVikunjaHierachie, u)
+	err = migration.InsertFromStructureWithContext(ctx, fullVikunjaHierachie, u)
 	if err != nil {
 		return
 	}

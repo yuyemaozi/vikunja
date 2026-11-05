@@ -69,6 +69,7 @@ func deleteUsers() {
 
 		func() {
 			us := db.NewSession()
+			events.BindRequestMeta(us, context.Background())
 			defer us.Close()
 			defer events.CleanupPending(us)
 

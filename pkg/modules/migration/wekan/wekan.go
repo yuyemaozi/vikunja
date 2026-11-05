@@ -19,6 +19,7 @@ package wekan
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -448,7 +449,7 @@ func (m *Migrator) Name() string {
 // @Success 200 {object} models.Message "A message telling you everything was migrated successfully."
 // @Failure 500 {object} models.Message "Internal server error"
 // @Router /migration/wekan/migrate [put]
-func (m *Migrator) Migrate(user *user.User, file io.ReaderAt, size int64) error {
+func (m *Migrator) Migrate(ctx context.Context, user *user.User, file io.ReaderAt, size int64) error {
 	if size == 0 {
 		return &migration.ErrFileIsEmpty{}
 	}
@@ -468,5 +469,5 @@ func (m *Migrator) Migrate(user *user.User, file io.ReaderAt, size int64) error 
 
 	vikunjaData := convertWekanToVikunja(board)
 
-	return migration.InsertFromStructure(vikunjaData, user)
+	return migration.InsertFromStructureWithContext(ctx, vikunjaData, user)
 }

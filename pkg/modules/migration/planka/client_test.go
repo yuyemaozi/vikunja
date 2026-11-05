@@ -17,6 +17,7 @@
 package planka
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -264,7 +265,7 @@ func TestClientDoesNotFollowCrossHostRedirects(t *testing.T) {
 	assert.Empty(t, other.requestsTo("/api/access-tokens"), "the password must not be replayed on another host")
 
 	c.apiKey = "key"
-	err = c.get("/api/projects", nil, &projectsResponse{})
+	err = c.get(context.Background(), "/api/projects", nil, &projectsResponse{})
 	require.ErrorIs(t, err, migration.ErrRedirectRefused)
 	assert.Empty(t, other.requestsTo("/api/projects"), "the api key must not be replayed on another host")
 }
@@ -298,7 +299,7 @@ func TestDownloadFollowsCrossHostRedirectsWithoutCredentials(t *testing.T) {
 			require.NoError(t, err)
 			c.apiKey, c.jwt = tc.apiKey, tc.jwt
 
-			buf, err := c.download("8", "small.bin")
+			buf, err := c.download(context.Background(), "8", "small.bin")
 			require.NoError(t, err)
 			assert.Equal(t, "hello", buf.String())
 
@@ -390,7 +391,7 @@ func TestLoginWithAPIKey(t *testing.T) {
 	assert.Equal(t, "1", c.currentUserID)
 
 	me := &plankaUserResponse{}
-	require.NoError(t, c.get("/api/users/me", nil, me))
+	require.NoError(t, c.get(context.Background(), "/api/users/me", nil, me))
 
 	for _, r := range f.requestsTo("/api/users/me") {
 		assert.Equal(t, "key123", r.Header.Get("X-Api-Key"))
@@ -409,7 +410,7 @@ func TestLoginWithBearerToken(t *testing.T) {
 	require.NoError(t, c.login(t.Context(), "jwt123", "", ""))
 
 	me := &plankaUserResponse{}
-	require.NoError(t, c.get("/api/users/me", nil, me))
+	require.NoError(t, c.get(context.Background(), "/api/users/me", nil, me))
 
 	reqs := f.requestsTo("/api/users/me")
 	require.Len(t, reqs, 3)
@@ -537,7 +538,7 @@ func TestFetchCommentsPaginates(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
-	comments, _, err := fetchComments(c, "42")
+	comments, _, err := fetchComments(context.Background(), c, "42")
 	require.NoError(t, err)
 	require.Len(t, comments, 51)
 	assert.Equal(t, "50", comments[0].ID, "oldest first")
@@ -553,7 +554,7 @@ func TestFetchCommentsPartialResultIsOldestFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
-	comments, _, err := fetchComments(c, "43")
+	comments, _, err := fetchComments(context.Background(), c, "43")
 	require.Error(t, err)
 	require.Len(t, comments, 2)
 	assert.Equal(t, "2", comments[0].ID, "oldest first, also for a partial result")
@@ -569,7 +570,7 @@ func TestFetchArchivedCardsPaginates(t *testing.T) {
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
 	bd := &plankaBoardData{}
-	require.NoError(t, fetchArchivedCards(c, "77", bd))
+	require.NoError(t, fetchArchivedCards(context.Background(), c, "77", bd))
 	assert.Len(t, bd.Cards, 51)
 	assert.Len(t, bd.CardLabels, 2, "included data of every page is merged")
 	assert.Len(t, f.requestsTo("/api/lists/77/cards"), 3)
@@ -584,7 +585,7 @@ func TestFetchArchivedCardsStopsWithoutListChangedAt(t *testing.T) {
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
 	bd := &plankaBoardData{}
-	require.NoError(t, fetchArchivedCards(c, "78", bd))
+	require.NoError(t, fetchArchivedCards(context.Background(), c, "78", bd))
 	assert.Len(t, bd.Cards, 1)
 	assert.Len(t, f.requestsTo("/api/lists/78/cards"), 1, "paging stops instead of sending a cursor planka rejects")
 }
@@ -605,11 +606,11 @@ func TestDownloadCapsSize(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
-	_, err = c.download("7", "big.bin")
+	_, err = c.download(context.Background(), "7", "big.bin")
 	var errTooLarge files.ErrFileIsTooLarge
 	require.ErrorAs(t, err, &errTooLarge, "got %v", err)
 
-	buf, err := c.download("8", "small.bin")
+	buf, err := c.download(context.Background(), "8", "small.bin")
 	require.NoError(t, err)
 	assert.Equal(t, "hello", buf.String())
 	reqs := f.requestsTo("/attachments/8/download/small.bin")

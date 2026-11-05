@@ -18,6 +18,7 @@ package planka
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -51,7 +52,7 @@ func TestFetchAll(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
-	data, err := fetchAll(c)
+	data, err := fetchAll(context.Background(), c)
 	require.NoError(t, err)
 
 	assert.Equal(t, "1", data.CurrentUserID)
@@ -89,7 +90,7 @@ func TestFetchBoardV1Unsupported(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
-	_, err = fetchBoard(c, "30")
+	_, err = fetchBoard(context.Background(), c, "30")
 	var errVersion *ErrUnsupportedVersion
 	require.ErrorAs(t, err, &errVersion)
 }
@@ -103,7 +104,7 @@ func TestConvertPlankaToVikunja(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.login(t.Context(), "key", "", ""))
 
-	data, err := fetchAll(c)
+	data, err := fetchAll(context.Background(), c)
 	require.NoError(t, err)
 
 	downloads := []string{}
@@ -277,7 +278,7 @@ func TestMigrate(t *testing.T) {
 	u := &user.User{ID: 1}
 
 	m := &Migrator{URL: srv.URL + "/api/", Token: "key"}
-	require.NoError(t, m.Migrate(u))
+	require.NoError(t, m.Migrate(context.Background(), u))
 
 	db.AssertExists(t, "projects", map[string]interface{}{"title": "Migrated from Planka", "owner_id": u.ID}, false)
 	s := db.NewSession()

@@ -18,6 +18,7 @@ package trello
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -477,7 +478,7 @@ func TestConvertTrelloToVikunja(t *testing.T) {
 
 	organizationMap := getTrelloOrganizationsWithBoards(trelloData)
 	for organizationID, boards := range organizationMap {
-		hierarchy, err := convertTrelloDataToVikunja(organizationID, boards, &trello.Client{}, nil)
+		hierarchy, err := convertTrelloDataToVikunja(context.Background(), organizationID, boards, &trello.Client{}, nil)
 
 		require.NoError(t, err)
 		assert.NotNil(t, hierarchy)
@@ -526,7 +527,7 @@ func TestDownloadAttachmentDropsTokenOnRedirect(t *testing.T) {
 	}))
 	t.Cleanup(origin.Close)
 
-	buf, err := downloadAttachment(origin.URL, "secret-token")
+	buf, err := downloadAttachment(context.Background(), origin.URL, "secret-token")
 	require.NoError(t, err)
 	assert.Equal(t, "file", buf.String())
 	assert.Contains(t, originAuth, "secret-token")

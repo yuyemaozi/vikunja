@@ -397,7 +397,7 @@ func (v *FileMigrator) ValidateFile(file io.ReaderAt, size int64) error {
 // @Success 200 {object} models.Message "A message telling you the migration was started."
 // @Failure 500 {object} models.Message "Internal server error"
 // @Router /migration/vikunja-file/migrate [post]
-func (v *FileMigrator) Migrate(user *user.User, file io.ReaderAt, size int64) error {
+func (v *FileMigrator) Migrate(ctx context.Context, user *user.User, file io.ReaderAt, size int64) error {
 	r, err := openArchive(file, size)
 	if err != nil {
 		return err
@@ -518,7 +518,7 @@ func (v *FileMigrator) Migrate(user *user.User, file io.ReaderAt, size int64) er
 		}
 	}
 
-	err = migration.InsertFromStructureWithFileProvider(projects, user, provider)
+	err = migration.InsertFromStructureWithFileProviderContext(ctx, projects, user, provider)
 	if err != nil {
 		return fmt.Errorf("could not insert data: %w", err)
 	}
@@ -531,6 +531,8 @@ func (v *FileMigrator) Migrate(user *user.User, file io.ReaderAt, size int64) er
 	log.Debugf(logPrefix+"Importing %d saved filters", len(filters))
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	for _, f := range filters {
@@ -548,7 +550,7 @@ func (v *FileMigrator) Migrate(user *user.User, file io.ReaderAt, size int64) er
 		return err
 	}
 
-	events.DispatchPending(context.Background(), s)
+	events.DispatchPending(ctx, s)
 	return nil
 }
 

@@ -208,6 +208,7 @@ func totpEnable(ctx context.Context, in *totpEnableBody) (*totpMessageBody, erro
 	if err != nil {
 		return nil, err
 	}
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	defer events.CleanupPending(s)
 

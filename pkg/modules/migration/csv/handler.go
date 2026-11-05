@@ -184,7 +184,7 @@ func (c *MigratorWeb) Migrate(ctx *echo.Context) error {
 	}
 	defer src.Close()
 
-	if err := migrationHandler.StartFileMigration(&Migrator{}, u, src, file.Size, []byte(configStr)); err != nil {
+	if err := migrationHandler.StartFileMigrationWithContext(ctx.Request().Context(), &Migrator{}, u, src, file.Size, []byte(configStr)); err != nil {
 		return err
 	}
 

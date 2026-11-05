@@ -268,6 +268,7 @@ var userCreateCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, _ []string) {
 		s := db.NewSession()
+		events.BindRequestMeta(s, cmd.Context())
 		defer s.Close()
 		defer events.CleanupPending(s)
 
@@ -385,6 +386,8 @@ var userChangeStatusCmd = &cobra.Command{
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		s := db.NewSession()
+		events.BindRequestMeta(s, cmd.Context())
+		defer events.CleanupPending(s)
 		defer s.Close()
 
 		u := getUserFromArg(s, args[0])
@@ -444,6 +447,8 @@ var userDeleteCmd = &cobra.Command{
 		}
 
 		s := db.NewSession()
+		events.BindRequestMeta(s, cmd.Context())
+		defer events.CleanupPending(s)
 		defer s.Close()
 
 		u := getUserFromArg(s, args[0])

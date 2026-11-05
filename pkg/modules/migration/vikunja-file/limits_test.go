@@ -20,6 +20,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/flate"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -158,7 +159,7 @@ func runMigrate(t *testing.T, export []byte) error {
 	m := &FileMigrator{}
 	u := &user.User{ID: 1}
 	reader := bytes.NewReader(export)
-	return m.Migrate(u, reader, int64(reader.Len()))
+	return m.Migrate(context.Background(), u, reader, int64(reader.Len()))
 }
 
 func assertTooLarge(t *testing.T, err error) {
@@ -295,7 +296,7 @@ func TestVikunjaFileLimits(t *testing.T) {
 		require.NoError(t, migration.StoreImportUpload(status, u, bytes.NewReader(upload), int64(len(upload))))
 
 		export := bytes.NewReader(buildExportZip(t, []byte("hello")))
-		require.NoError(t, (&FileMigrator{}).Migrate(u, export, int64(export.Len())))
+		require.NoError(t, (&FileMigrator{}).Migrate(context.Background(), u, export, int64(export.Len())))
 	})
 
 	t.Run("actual file bytes enforce the storage quota", func(t *testing.T) {

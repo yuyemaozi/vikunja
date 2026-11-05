@@ -18,6 +18,7 @@ package csv
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -593,11 +594,11 @@ func parseDate(value, format string) time.Time {
 // @Failure 400 {object} models.Message "Invalid CSV file or configuration"
 // @Failure 500 {object} models.Message "Internal server error"
 // @Router /migration/csv/migrate [put]
-func (m *Migrator) Migrate(u *user.User, file io.ReaderAt, size int64) error {
+func (m *Migrator) Migrate(ctx context.Context, u *user.User, file io.ReaderAt, size int64) error {
 	if m.config == nil {
 		return &migration.ErrCSVConfigRequired{}
 	}
-	return MigrateWithConfig(u, file, size, m.config)
+	return MigrateWithConfigContext(ctx, u, file, size, m.config)
 }
 
 func (m *Migrator) SetOptions(options []byte) error {
@@ -611,11 +612,16 @@ func (m *Migrator) SetOptions(options []byte) error {
 
 // MigrateWithConfig imports CSV data into Vikunja with the provided configuration
 func MigrateWithConfig(u *user.User, file io.ReaderAt, size int64, config *ImportConfig) error {
+	return MigrateWithConfigContext(context.Background(), u, file, size, config)
+}
+
+// MigrateWithConfigContext imports CSV data with the originating job context.
+func MigrateWithConfigContext(ctx context.Context, u *user.User, file io.ReaderAt, size int64, config *ImportConfig) error {
 	projects, err := projectsFromCSV(file, size, config)
 	if err != nil {
 		return err
 	}
-	return migration.InsertFromStructure(projects, u)
+	return migration.InsertFromStructureWithContext(ctx, projects, u)
 }
 
 func projectsFromCSV(file io.ReaderAt, size int64, config *ImportConfig) ([]*models.ProjectWithTasksAndBuckets, error) {

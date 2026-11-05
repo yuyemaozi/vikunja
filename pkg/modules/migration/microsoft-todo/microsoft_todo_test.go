@@ -17,6 +17,7 @@
 package microsofttodo
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -213,7 +214,7 @@ func TestMakeAuthenticatedGetRequestUpstreamError(t *testing.T) {
 	apiPrefix = srv.URL + "/"
 	t.Cleanup(func() { apiPrefix = prevPrefix })
 
-	err := makeAuthenticatedGetRequest("token", "lists/delta", &projectsResponse{})
+	err := makeAuthenticatedGetRequest(context.Background(), "token", "lists/delta", &projectsResponse{})
 
 	var upstreamErr *migration.ErrUpstreamRequestFailed
 	require.ErrorAs(t, err, &upstreamErr)
@@ -232,7 +233,7 @@ func TestMakeAuthenticatedGetRequestTooLarge(t *testing.T) {
 	migration.MaxResponseBytes = 1024
 	t.Cleanup(func() { apiPrefix, migration.MaxResponseBytes = prevPrefix, prevMax })
 
-	err := makeAuthenticatedGetRequest("token", "lists/delta", &projectsResponse{})
+	err := makeAuthenticatedGetRequest(context.Background(), "token", "lists/delta", &projectsResponse{})
 	require.ErrorIs(t, err, migration.ErrResponseTooLarge)
 }
 
@@ -255,7 +256,7 @@ func TestGetMicrosoftTodoDataItemLimit(t *testing.T) {
 		config.MigrationMaxItems.Set(100000)
 	})
 
-	_, err := getMicrosoftTodoData("token")
+	_, err := getMicrosoftTodoData(context.Background(), "token")
 	var limitErr *migration.ErrImportItemLimitExceeded
 	require.ErrorAs(t, err, &limitErr)
 }

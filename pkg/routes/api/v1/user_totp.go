@@ -136,6 +136,7 @@ func UserTOTPEnable(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	events.BindRequestMeta(s, c.Request().Context())
 	defer s.Close()
 	defer events.CleanupPending(s)
 

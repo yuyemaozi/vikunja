@@ -278,6 +278,7 @@ func HandleFailedTOTPAuth(user *User) {
 
 	log.Infof("Blocking user account %d after 10 failed TOTP password attempts", user.ID)
 	s := db.NewSession()
+	events.BindRequestMeta(s, context.Background())
 	defer s.Close()
 	defer events.CleanupPending(s)
 
@@ -296,7 +297,11 @@ func HandleFailedTOTPAuth(user *User) {
 		_ = s.Rollback()
 		return
 	}
-	events.DispatchOnCommit(s, &AccountLockedEvent{UserID: user.ID})
+	if err := events.DispatchOnCommit(s, &AccountLockedEvent{UserID: user.ID}); err != nil {
+		_ = s.Rollback()
+		log.Errorf("Could not stage account lock event for user %d", user.ID)
+		return
+	}
 	if err := s.Commit(); err != nil {
 		log.Errorf("Could not commit lockout for user %d: %s", user.ID, err)
 		return

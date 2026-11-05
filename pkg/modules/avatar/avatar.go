@@ -202,6 +202,7 @@ func SyncFromProvider(ctx context.Context, userID int64, provider string, raw []
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
 	defer s.Close()
 	defer events.CleanupPending(s)
 

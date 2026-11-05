@@ -17,6 +17,7 @@
 package migration
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -31,8 +32,8 @@ type stateMigrator struct {
 	State string
 }
 
-func (m *stateMigrator) Name() string               { return "state-test" }
-func (m *stateMigrator) Migrate(_ *user.User) error { return nil }
+func (m *stateMigrator) Name() string                                  { return "state-test" }
+func (m *stateMigrator) Migrate(_ context.Context, _ *user.User) error { return nil }
 func (m *stateMigrator) AuthURL(state string) string {
 	return "https://example.com/auth?state=" + state
 }

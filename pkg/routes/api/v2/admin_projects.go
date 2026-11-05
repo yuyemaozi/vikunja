@@ -113,6 +113,8 @@ func adminProjectsPatchOwner(ctx context.Context, in *struct {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, ctx)
+	defer events.CleanupPending(s)
 	defer s.Close()
 
 	p, err := models.ReassignProjectOwner(s, doer, in.ID, in.Body.OwnerID)

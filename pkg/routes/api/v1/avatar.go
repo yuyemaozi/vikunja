@@ -104,6 +104,7 @@ func UploadAvatar(c *echo.Context) (err error) {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, c.Request().Context())
 	defer s.Close()
 	defer events.CleanupPending(s)
 

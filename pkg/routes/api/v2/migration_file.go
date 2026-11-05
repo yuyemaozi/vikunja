@@ -114,7 +114,7 @@ func migrationFileMigrate(ctx context.Context, factory func() migration.FileMigr
 	src := in.RawBody.Data().Import
 	defer func() { _ = src.Close() }()
 
-	if err := migrationHandler.StartFileMigration(factory(), u, src, src.Size, nil); err != nil {
+	if err := migrationHandler.StartFileMigrationWithContext(ctx, factory(), u, src, src.Size, nil); err != nil {
 		return nil, translateDomainError(err)
 	}
 

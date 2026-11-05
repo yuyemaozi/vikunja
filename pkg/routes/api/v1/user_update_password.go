@@ -65,6 +65,7 @@ func UserChangePassword(c *echo.Context) error {
 	}
 
 	s := db.NewSession()
+	events.BindRequestMeta(s, c.Request().Context())
 	defer s.Close()
 	defer events.CleanupPending(s)
 

@@ -52,21 +52,31 @@ type backgroundFileStorageCounter interface {
 // InsertFromStructure takes a fully nested Vikunja data structure and a user and then creates everything for this user
 // (Projects, tasks, etc. Even attachments and relations.)
 func InsertFromStructure(str []*models.ProjectWithTasksAndBuckets, u *user.User) (err error) {
-	return insertFromStructureWithFileProvider(str, u, nil)
+	return InsertFromStructureWithContext(context.Background(), str, u)
 }
 
 // InsertFromStructureWithFileProvider imports lazily opened attachment and background bytes.
 func InsertFromStructureWithFileProvider(str []*models.ProjectWithTasksAndBuckets, u *user.User, provider FileProvider) (err error) {
-	return insertFromStructureWithFileProvider(str, u, provider)
+	return InsertFromStructureWithFileProviderContext(context.Background(), str, u, provider)
 }
 
-func insertFromStructureWithFileProvider(str []*models.ProjectWithTasksAndBuckets, u *user.User, provider FileProvider) (err error) {
+// InsertFromStructureWithContext preserves request metadata for background imports.
+func InsertFromStructureWithContext(ctx context.Context, str []*models.ProjectWithTasksAndBuckets, u *user.User) error {
+	return insertFromStructureWithFileProvider(ctx, str, u, nil)
+}
+
+// InsertFromStructureWithFileProviderContext imports bytes with the originating context.
+func InsertFromStructureWithFileProviderContext(ctx context.Context, str []*models.ProjectWithTasksAndBuckets, u *user.User, provider FileProvider) error {
+	return insertFromStructureWithFileProvider(ctx, str, u, provider)
+}
+
+func insertFromStructureWithFileProvider(ctx context.Context, str []*models.ProjectWithTasksAndBuckets, u *user.User, provider FileProvider) (err error) {
 	if err := CheckItemLimit(str); err != nil {
 		return err
 	}
 
 	s := db.NewSession()
-	events.BindRequestMeta(s, context.Background())
+	events.BindRequestMeta(s, ctx)
 	defer events.CleanupPending(s)
 	defer s.Close()
 
@@ -80,7 +90,7 @@ func insertFromStructureWithFileProvider(str []*models.ProjectWithTasksAndBucket
 	// Failed transactions roll back file rows, not blobs written before commit.
 	createdFiles := &[]int64{}
 
-	err = insertFromStructure(s, str, importer, provider, createdFiles)
+	err = insertFromStructure(ctx, s, str, importer, provider, createdFiles)
 	if err != nil {
 		log.Errorf("[creating structure] Error while creating structure: %s", err.Error())
 		cleanupAndRollback(s, *createdFiles)
@@ -94,7 +104,7 @@ func insertFromStructureWithFileProvider(str []*models.ProjectWithTasksAndBucket
 		return err
 	}
 
-	events.DispatchPending(context.Background(), s)
+	events.DispatchPending(ctx, s)
 	return nil
 }
 
@@ -115,7 +125,7 @@ func cleanupCreatedFiles(fileIDs []int64) {
 	}
 }
 
-func insertFromStructure(s *xorm.Session, str []*models.ProjectWithTasksAndBuckets, user *user.User, provider FileProvider, createdFiles *[]int64) (err error) {
+func insertFromStructure(ctx context.Context, s *xorm.Session, str []*models.ProjectWithTasksAndBuckets, user *user.User, provider FileProvider, createdFiles *[]int64) (err error) {
 
 	log.Infof("[creating structure] Creating %d projects for user %d", len(str), user.ID)
 
@@ -153,7 +163,7 @@ func insertFromStructure(s *xorm.Session, str []*models.ProjectWithTasksAndBucke
 			view.ProjectID = 0
 		}
 
-		err = createProject(s, p, &archivedProjects, labels, user, provider, createdFiles)
+		err = createProject(ctx, s, p, &archivedProjects, labels, user, provider, createdFiles)
 		if err != nil {
 			return err
 		}
@@ -222,8 +232,8 @@ func seedMissingTaskPositions(tasks []*models.TaskWithComments) {
 	}
 }
 
-func createProject(s *xorm.Session, project *models.ProjectWithTasksAndBuckets, archivedProjectIDs *[]int64, labels map[string]*models.Label, user *user.User, provider FileProvider, createdFiles *[]int64) (err error) {
-	err = createProjectWithEverything(s, project, archivedProjectIDs, labels, user, provider, createdFiles)
+func createProject(ctx context.Context, s *xorm.Session, project *models.ProjectWithTasksAndBuckets, archivedProjectIDs *[]int64, labels map[string]*models.Label, user *user.User, provider FileProvider, createdFiles *[]int64) (err error) {
+	err = createProjectWithEverything(ctx, s, project, archivedProjectIDs, labels, user, provider, createdFiles)
 	if err != nil {
 		return err
 	}
@@ -233,7 +243,7 @@ func createProject(s *xorm.Session, project *models.ProjectWithTasksAndBuckets, 
 	return
 }
 
-func createProjectWithEverything(s *xorm.Session, project *models.ProjectWithTasksAndBuckets, archivedProjects *[]int64, labels map[string]*models.Label, user *user.User, provider FileProvider, createdFiles *[]int64) (err error) {
+func createProjectWithEverything(ctx context.Context, s *xorm.Session, project *models.ProjectWithTasksAndBuckets, archivedProjects *[]int64, labels map[string]*models.Label, user *user.User, provider FileProvider, createdFiles *[]int64) (err error) {
 	// The tasks and bucket slices are going to be reset during the creation of the project, so we rescue it here
 	// to be able to still loop over them aftere the project was created.
 	tasks := project.Tasks
@@ -273,7 +283,7 @@ func createProjectWithEverything(s *xorm.Session, project *models.ProjectWithTas
 
 		log.Debugf("[creating structure] Creating a background file for project %d", project.ID)
 
-		_, err = saveBackground(s, user, &project.Project, backgroundFile)
+		_, err = saveBackground(ctx, s, user, &project.Project, backgroundFile)
 		if err != nil {
 			log.Errorf("[creating structure] Could not create background for project %d, error was %v", project.ID, err)
 		} else {
@@ -290,7 +300,7 @@ func createProjectWithEverything(s *xorm.Session, project *models.ProjectWithTas
 			log.Debugf("[creating structure] Creating a background file for project %d", project.ID)
 
 			var storedSize int64
-			storedSize, err = saveBackground(s, user, &project.Project, backgroundFile)
+			storedSize, err = saveBackground(ctx, s, user, &project.Project, backgroundFile)
 			closeErr := backgroundFile.Close()
 			if err != nil {
 				return err
@@ -808,8 +818,8 @@ func remapAssignees(assignees []*user.User, importer *user.User) []*user.User {
 	return nil
 }
 
-func saveBackground(s *xorm.Session, u *user.User, project *models.Project, src io.ReadSeeker) (storedSize int64, err error) {
-	bg, err := handler.PrepareBackground(context.Background(), src, "")
+func saveBackground(ctx context.Context, s *xorm.Session, u *user.User, project *models.Project, src io.ReadSeeker) (storedSize int64, err error) {
+	bg, err := handler.PrepareBackground(ctx, src, "")
 	if err != nil {
 		return 0, err
 	}
