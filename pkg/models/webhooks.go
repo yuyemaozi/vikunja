@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -46,7 +47,6 @@ import (
 var webhookClient *http.Client
 
 // The webhook target is user-configured, so its error body is untrusted and can be arbitrarily large.
-const maxWebhookErrorBodySize = 4096
 
 type Webhook struct {
 	// The generated ID of this webhook target
@@ -366,6 +366,7 @@ func (w *Webhook) sendWebhookRaw(payload []byte, requestID string) (err error) {
 
 // sendWebhookRawContext sends persisted bytes bound to the caller's context.
 func (w *Webhook) sendWebhookRawContext(ctx context.Context, payload []byte, requestID string) (err error) {
+	started := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.TargetURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -399,11 +400,11 @@ func (w *Webhook) sendWebhookRawContext(ctx context.Context, payload []byte, req
 
 	defer res.Body.Close()
 
-	if res.StatusCode > 399 {
-		log.Errorf("Got response with status %d from webhook %d", res.StatusCode, w.ID)
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		log.Event(ctx, slog.LevelError, "webhook.http.failed", "request_id", requestID, "webhook_id", w.ID, "http_status", res.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 		return fmt.Errorf("webhook %d returned non-success status %d", w.ID, res.StatusCode)
 	}
 
-	log.Debugf("Sent webhook payload for webhook %d", w.ID)
+	log.Event(ctx, slog.LevelInfo, "webhook.http.completed", "request_id", requestID, "webhook_id", w.ID, "http_status", res.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 	return
 }

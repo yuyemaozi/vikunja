@@ -31,6 +31,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"xorm.io/xorm"
 )
 
 func TestDeliveryTransitions(t *testing.T) {
@@ -202,21 +203,20 @@ func TestDeliveryCASConcurrentNormalAndRecover(t *testing.T) {
 	assert.Equal(t, 1, statuses["busy"])
 }
 
-func withFakeDeliveryClock(t *testing.T) *time.Time {
+func withFakeDeliveryClock(t *testing.T) {
 	t.Helper()
 	now := time.Now().UTC()
-	previousNow := deliveryNow
+	previousDBNow := deliveryDatabaseNow
 	previousSleeper := deliverySleeper
-	deliveryNow = func() time.Time { return now }
+	deliveryDatabaseNow = func(_ *xorm.Session) (time.Time, error) { return now, nil }
 	deliverySleeper = func(ctx context.Context, duration time.Duration) error {
 		now = now.Add(duration)
 		return ctx.Err()
 	}
 	t.Cleanup(func() {
-		deliveryNow = previousNow
+		deliveryDatabaseNow = previousDBNow
 		deliverySleeper = previousSleeper
 	})
-	return &now
 }
 
 func newPendingDelivery(t *testing.T, targetURL string) *WebhookDeliveryRecord {
@@ -288,7 +288,7 @@ func TestDeliveryDriverCancelDuringBackoff(t *testing.T) {
 	record := newPendingDelivery(t, server.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	previousSleeper := deliverySleeper
-	deliverySleeper = func(ctx context.Context, _ time.Duration) error {
+	deliverySleeper = func(_ context.Context, _ time.Duration) error {
 		cancel()
 		return ctx.Err()
 	}
@@ -314,7 +314,7 @@ func TestDeliveryDriverDeadlineBoundsAttempts(t *testing.T) {
 	record := newPendingDelivery(t, server.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	previousSleeper := deliverySleeper
-	deliverySleeper = func(ctx context.Context, _ time.Duration) error {
+	deliverySleeper = func(_ context.Context, _ time.Duration) error {
 		cancel()
 		return context.Canceled
 	}
@@ -426,7 +426,9 @@ func TestDeliveryHTTPHonorsCallerDeadline(t *testing.T) {
 
 	assert.Less(t, elapsed, 3*time.Second, "HTTP must use the caller context")
 	assert.NotEqual(t, "delivered", result.Status)
-	assert.Equal(t, WebhookDeliveryStatusPending, loadDelivery(t, record.DeliveryID).Status)
+	stored := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, WebhookDeliveryStatusProcessing, stored.Status)
+	assert.NotNil(t, stored.LeaseUntil)
 }
 
 func TestLegacyAttemptCannotStealValidLease(t *testing.T) {

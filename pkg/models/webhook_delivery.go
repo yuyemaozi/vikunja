@@ -131,31 +131,19 @@ func AttemptWebhookDelivery(deliveryID string) error {
 	return nil
 }
 
-// ClaimWebhookDeliveryForRecovery atomically claims a pending or failed row.
-func ClaimWebhookDeliveryForRecovery(s *xorm.Session, deliveryID string) (bool, error) {
-	result, err := s.Exec(
-		"UPDATE webhook_deliveries SET status = ? WHERE delivery_id = ? AND status IN (?, ?)",
-		WebhookDeliveryStatusProcessing,
-		deliveryID,
-		WebhookDeliveryStatusPending,
-		WebhookDeliveryStatusFailed,
-	)
-	if err != nil {
-		return false, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return affected == 1, nil
-}
-
 // RecoverableWebhookDeliveries lists pending rows older than the cutoff.
 func RecoverableWebhookDeliveries(
 	s *xorm.Session,
 	now time.Time,
 	limit int,
 ) ([]*WebhookDeliveryRecord, error) {
+	if now.IsZero() {
+		var err error
+		now, err = deliveryDatabaseNow(s)
+		if err != nil {
+			return nil, err
+		}
+	}
 	records := make([]*WebhookDeliveryRecord, 0)
 	err := s.Where(
 		"(status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "+
@@ -169,29 +157,10 @@ func RecoverableWebhookDeliveries(
 	return records, err
 }
 
-// RetryWebhookDelivery atomically moves one failed delivery back to pending.
-func RetryWebhookDelivery(s *xorm.Session, deliveryID string) (bool, error) {
-	result, err := s.Exec(
-		"UPDATE webhook_deliveries SET status = ?, failed_at = NULL, last_error_code = '' "+
-			"WHERE delivery_id = ? AND status = ?",
-		WebhookDeliveryStatusPending,
-		deliveryID,
-		WebhookDeliveryStatusFailed,
-	)
-	if err != nil {
-		return false, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return affected == 1, nil
-}
-
 // ListWebhookDeliveries lists outbox entries in the given statuses.
 func ListWebhookDeliveries(s *xorm.Session, statuses []string) ([]*WebhookDeliveryRecord, error) {
 	if len(statuses) == 0 {
-		statuses = []string{WebhookDeliveryStatusPending, WebhookDeliveryStatusFailed}
+		statuses = []string{WebhookDeliveryStatusPending, WebhookDeliveryStatusProcessing, WebhookDeliveryStatusFailed}
 	}
 	records := make([]*WebhookDeliveryRecord, 0)
 	err := s.In("status", statuses).

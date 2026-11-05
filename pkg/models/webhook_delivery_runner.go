@@ -18,15 +18,21 @@ package models
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/db"
+	"code.vikunja.io/api/pkg/log"
 
 	"github.com/google/uuid"
 	"xorm.io/xorm"
+	"xorm.io/xorm/schemas"
 )
 
 // DeliveryMode selects which persisted rows a claim may pick up.
@@ -47,10 +53,12 @@ type DeliveryResult struct {
 
 // Lease fences one owner of a processing row.
 type Lease struct {
-	Token      string
-	Generation int
-	Until      time.Time
-	Attempt    int
+	Token        string
+	Generation   int
+	Until        time.Time
+	Attempt      int
+	databaseTime time.Time
+	wallStarted  time.Time
 }
 
 // DeliveryOutcome is the terminal or retry result of one HTTP attempt.
@@ -75,6 +83,25 @@ func ClaimWebhookDelivery(
 	now time.Time,
 	ttl time.Duration,
 ) (Lease, DeliveryResult, error) {
+	wallStarted := time.Now()
+	if mode != DeliveryModeNormal && mode != DeliveryModeRecover && mode != DeliveryModeRetry {
+		return Lease{}, DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "invalid_mode"}, fmt.Errorf("unsupported delivery mode")
+	}
+
+	{
+		// An exhausted lease can be finalized without starting a seventh attempt.
+		result, err := s.Exec("UPDATE webhook_deliveries SET status = 'failed', failed_at = ?, lease_token = NULL, lease_until = NULL, next_attempt_at = NULL, last_error_code = 'attempts_exhausted' WHERE delivery_id = ? AND cycle_attempt_count >= 6 AND ((status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (status = 'processing' AND lease_until <= ?))", now, id, now, now)
+		if err != nil {
+			return Lease{}, DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return Lease{}, DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}, err
+		}
+		if affected > 0 {
+			return Lease{}, DeliveryResult{DeliveryID: id, Status: "failed", ErrorCode: "attempts_exhausted"}, nil
+		}
+	}
 	token := uuid.NewString()
 	until := now.Add(ttl)
 
@@ -85,7 +112,7 @@ func ClaimWebhookDelivery(
 			"AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) " +
 			"OR (status = 'processing' AND cycle_attempt_count < 6 AND lease_until <= ?)"
 	case DeliveryModeRetry:
-		where = "status = 'failed'"
+		where = "status = 'failed' OR (status = 'pending' AND cycle_attempt_count < 6 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (status = 'processing' AND cycle_attempt_count < 6 AND lease_until <= ?)"
 	default:
 		return Lease{}, DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "invalid_mode"},
 			fmt.Errorf("unsupported delivery mode %q", mode)
@@ -94,17 +121,15 @@ func ClaimWebhookDelivery(
 	generation := "retry_generation"
 	attempts := "cycle_attempt_count + 1"
 	if mode == DeliveryModeRetry {
-		generation = "retry_generation + 1"
-		attempts = "1"
+		generation = "CASE WHEN status = 'failed' THEN retry_generation + 1 ELSE retry_generation END"
+		attempts = "CASE WHEN status = 'failed' THEN 1 ELSE cycle_attempt_count + 1 END"
 	}
 
 	arguments := []any{token, until, now, id}
-	if mode != DeliveryModeRetry {
-		arguments = append(arguments, now, now)
-	}
-	statement := "UPDATE webhook_deliveries SET status = 'processing', lease_token = ?, lease_until = ?, " +
+	arguments = append(arguments, now, now)
+	statement := "UPDATE webhook_deliveries SET lease_token = ?, lease_until = ?, " +
 		"attempt_count = attempt_count + 1, last_attempt_at = ?, " +
-		"cycle_attempt_count = " + attempts + ", retry_generation = " + generation + " " +
+		"cycle_attempt_count = " + attempts + ", retry_generation = " + generation + ", failed_at = CASE WHEN status = 'failed' THEN NULL ELSE failed_at END, status = 'processing' " +
 		"WHERE delivery_id = ? AND (" + where + ")"
 	result, err := s.Exec(append([]any{statement}, arguments...)...)
 	if err != nil {
@@ -137,10 +162,12 @@ func ClaimWebhookDelivery(
 		return Lease{}, DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "read_failed"}, err
 	}
 	return Lease{
-		Token:      token,
-		Generation: record.RetryGeneration,
-		Until:      until,
-		Attempt:    record.CycleAttemptCount,
+		Token:        token,
+		Generation:   record.RetryGeneration,
+		Until:        until,
+		Attempt:      record.CycleAttemptCount,
+		databaseTime: now,
+		wallStarted:  wallStarted,
 	}, DeliveryResult{DeliveryID: id, Status: "processing"}, nil
 }
 
@@ -188,7 +215,32 @@ func CompleteWebhookDelivery(
 	return affected == 1, nil
 }
 
-var deliveryNow = func() time.Time { return time.Now().UTC() }
+var errDeliveryPayloadCorrupt = errors.New("stored webhook payload is corrupt")
+
+// The database owns eligibility and lease time; the wall clock only bounds work.
+var deliveryDatabaseNow = func(s *xorm.Session) (time.Time, error) {
+	query := "SELECT UTC_TIMESTAMP(6) AS current_time"
+	switch db.Type() { //nolint:exhaustive // Vikunja supports only SQLite, PostgreSQL and MySQL.
+	case schemas.SQLITE:
+		query = "SELECT strftime('%Y-%m-%d %H:%M:%f', 'now') AS current_time"
+	case schemas.POSTGRES:
+		query = "SELECT clock_timestamp() AS current_time"
+	}
+	rows, err := s.QueryString(query)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(rows) != 1 {
+		return time.Time{}, fmt.Errorf("database clock unavailable")
+	}
+	value := rows[0]["current_time"]
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02 15:04:05.999999999-07", "2006-01-02 15:04:05.999999999"} {
+		if now, err := time.Parse(layout, value); err == nil {
+			return now.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid database clock")
+}
 
 var deliveryBackoff = []time.Duration{
 	100 * time.Millisecond,
@@ -204,9 +256,16 @@ const (
 	deliveryDBPhaseLimit = 5 * time.Second
 )
 
-func newDeliveryPhase(ctx context.Context) (*xorm.Session, context.CancelFunc) {
+func newDeliveryPhase(ctx context.Context) (*xorm.Session, context.CancelFunc, error) {
 	phaseCtx, cancel := context.WithTimeout(ctx, deliveryDBPhaseLimit)
-	return db.NewSession().Context(phaseCtx), cancel
+	session := db.NewAutocommitSession()
+	db.SetSessionContext(phaseCtx, session)
+	if err := session.Begin(); err != nil {
+		cancel()
+		_ = session.Close()
+		return nil, cancel, err
+	}
+	return session, cancel, nil
 }
 
 var deliverySleeper = func(ctx context.Context, duration time.Duration) error {
@@ -226,25 +285,40 @@ var deliverySleeper = func(ctx context.Context, duration time.Duration) error {
 // RunWebhookDelivery runs one bounded retry cycle: claim, send outside the
 // transaction, persist the outcome, wait for the persisted retry time and
 // re-claim. It never holds a transaction while sending or sleeping.
-func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) DeliveryResult {
+func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) (result DeliveryResult) {
+	observation := newDeliveryObservation(id)
+	defer observation.finish(ctx, &result)
+
 	httpTimeout := time.Duration(config.WebhooksTimeoutSeconds.GetInt()) * time.Second
-	leaseTTL := httpTimeout + 30*time.Second
-	deadline := deliveryNow().Add(6*httpTimeout + 10*time.Second)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
+	if httpTimeout <= 0 {
+		return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "invalid_timeout"}
 	}
+	leaseTTL := httpTimeout + 30*time.Second
+	ctx, cancelDriver := context.WithTimeout(ctx, 6*httpTimeout+10*time.Second)
+	defer cancelDriver()
+	deadline, _ := ctx.Deadline()
 	claimMode := mode
 
 	for {
+		attemptStarted := time.Now()
 		if ctx.Err() != nil {
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "cancelled"}
 		}
-		now := deliveryNow()
+		now := time.Now().UTC()
 		if now.After(deadline) {
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "deadline"}
 		}
 
-		session, cancel := newDeliveryPhase(ctx)
+		session, cancel, err := newDeliveryPhase(ctx)
+		if err != nil {
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
+		}
+		now, err = deliveryDatabaseNow(session)
+		if err != nil {
+			cancel()
+			_ = session.Close()
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "clock_failed"}
+		}
 		lease, result, err := ClaimWebhookDelivery(session, id, claimMode, now, leaseTTL)
 		if err != nil {
 			cancel()
@@ -252,76 +326,92 @@ func RunWebhookDelivery(ctx context.Context, id string, mode DeliveryMode) Deliv
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
 		}
 		if result.Status != "processing" {
+			if err := session.Commit(); err != nil {
+				cancel()
+				_ = session.Close()
+				return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "claim_failed"}
+			}
 			cancel()
 			_ = session.Close()
 			return result
 		}
 
-		record := &WebhookDeliveryRecord{}
-		has, err := session.Where("delivery_id = ?", id).Get(record)
-		webhook := &Webhook{}
-		webhookFound := false
-		if has && err == nil {
-			webhookFound, err = session.Where("id = ?", record.WebhookID).Get(webhook)
-		}
+		record, webhook, cancelReason, err := prepareClaimedDelivery(session, id, lease)
+		observation.bind(record, lease)
+
 		if commitErr := session.Commit(); commitErr != nil {
 			err = commitErr
 		}
 		cancel()
 		_ = session.Close()
-		if err != nil || !has {
+		if err != nil && !errors.Is(err, errDeliveryPayloadCorrupt) {
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "read_failed"}
 		}
-
-		outcome := DeliveryOutcome{Kind: OutcomeDelivered}
-		if !webhookFound {
-			outcome = DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
-		} else if sendErr := sendPersistedWebhook(ctx, webhook, record); sendErr != nil {
-			if lease.Attempt >= deliveryMaxAttempt {
-				outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
-			} else {
-				backoff := deliveryBackoff[min(lease.Attempt-1, len(deliveryBackoff)-1)]
-				retryAt := deliveryNow().Add(backoff)
-				outcome = DeliveryOutcome{
-					Kind:      OutcomeRetry,
-					ErrorCode: "delivery_failed",
-					RetryAt:   &retryAt,
-				}
-			}
+		var outcome DeliveryOutcome
+		if errors.Is(err, errDeliveryPayloadCorrupt) {
+			outcome = DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "payload_corrupt"}
+		} else {
+			outcome = attemptWebhookDelivery(ctx, webhook, record, lease, cancelReason)
 		}
 
-		completeSession, cancelComplete := newDeliveryPhase(context.WithoutCancel(ctx))
-		completed, err := CompleteWebhookDelivery(completeSession, id, lease, deliveryNow(), outcome)
-		if err != nil || !completed {
+		cleanupCtx, cancelCleanup := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		completeSession, cancelComplete, phaseErr := newDeliveryPhase(cleanupCtx)
+		cancelCleanupAfterPhase := func() { cancelComplete(); cancelCleanup() }
+		if phaseErr != nil {
+			cancelCleanup()
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
+		}
+		completedAt, clockErr := deliveryDatabaseNow(completeSession)
+		if clockErr != nil {
+			cancelCleanupAfterPhase()
 			_ = completeSession.Close()
+			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "clock_failed"}
+		}
+		if outcome.Kind == OutcomeRetry {
+			retryAt := completedAt.Add(deliveryBackoff[min(lease.Attempt-1, len(deliveryBackoff)-1)])
+			outcome.RetryAt = &retryAt
+		}
+		completed, err := CompleteWebhookDelivery(completeSession, id, lease, completedAt, outcome)
+		if err != nil || !completed {
+			cancelCleanupAfterPhase()
+			_ = completeSession.Close()
+			if err != nil {
+				return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
+			}
+			log.Event(ctx, slog.LevelWarn, "webhook.delivery.lease_lost", "request_id", record.RequestID, "delivery_id", id, "generation", lease.Generation, "attempt", lease.Attempt)
 			return DeliveryResult{DeliveryID: id, Status: "busy", ErrorCode: "lease_lost"}
 		}
 		if commitErr := completeSession.Commit(); commitErr != nil {
-			cancelComplete()
+			cancelCleanupAfterPhase()
 			_ = completeSession.Close()
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "finalize_failed"}
 		}
-		cancelComplete()
+		cancelCleanupAfterPhase()
 		_ = completeSession.Close()
+
+		level := slog.LevelInfo
+		if outcome.Kind == OutcomeRetry {
+			level = slog.LevelWarn
+		}
+		if outcome.Kind == OutcomeFailed {
+			level = slog.LevelError
+		}
+		log.Event(ctx, level, "webhook.delivery.attempt_completed",
+			"request_id", record.RequestID, "delivery_id", id, "generation", lease.Generation,
+			"attempt", lease.Attempt, "status", outcome.Kind, "error_code", outcome.ErrorCode,
+			"duration_ms", time.Since(attemptStarted).Milliseconds())
 
 		switch outcome.Kind {
 		case OutcomeDelivered, OutcomeCancelled, OutcomeFailed:
 			return DeliveryResult{DeliveryID: id, Status: outcome.Kind, ErrorCode: outcome.ErrorCode}
 		}
 
-		wait := outcome.RetryAt.Sub(deliveryNow())
+		wait := outcome.RetryAt.Sub(completedAt)
 		if err := deliverySleeper(ctx, wait); err != nil {
 			return DeliveryResult{DeliveryID: id, Status: "error", ErrorCode: "cancelled"}
 		}
 		claimMode = DeliveryModeNormal
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func sendPersistedWebhook(ctx context.Context, webhook *Webhook, record *WebhookDeliveryRecord) error {
@@ -337,4 +427,105 @@ func sendPersistedWebhook(ctx context.Context, webhook *Webhook, record *Webhook
 		}
 	}
 	return webhook.sendWebhookRawContext(ctx, body, record.RequestID)
+}
+
+// materializeDelivery freezes legacy bytes and missing UUID once while the claim
+// transaction owns the row. Every later attempt reads the same values.
+func materializeDelivery(s *xorm.Session, record *WebhookDeliveryRecord, lease Lease) error {
+	changed := false
+	if len(record.PayloadBody) == 0 {
+		if record.Payload == nil {
+			return errDeliveryPayloadCorrupt
+		}
+		body, err := json.Marshal(record.Payload)
+		if err != nil {
+			return err
+		}
+		record.PayloadBody = body
+		sum := sha256.Sum256(body)
+		record.PayloadSHA256 = hex.EncodeToString(sum[:])
+		changed = true
+	}
+	id, err := uuid.Parse(record.RequestID)
+	if err != nil {
+		record.RequestID = uuid.NewString()
+		changed = true
+	} else if id.String() != record.RequestID {
+		record.RequestID = id.String()
+		changed = true
+	}
+	sum := sha256.Sum256(record.PayloadBody)
+	digest := hex.EncodeToString(sum[:])
+	if record.PayloadSHA256 != "" && record.PayloadSHA256 != digest {
+		return errDeliveryPayloadCorrupt
+	}
+	if record.PayloadSHA256 == "" {
+		record.PayloadSHA256 = digest
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	now, clockErr := deliveryDatabaseNow(s)
+	if clockErr != nil {
+		return clockErr
+	}
+	result, err := s.Exec("UPDATE webhook_deliveries SET payload_body = ?, payload_sha256 = ?, request_id = ? WHERE delivery_id = ? AND status = 'processing' AND lease_token = ? AND retry_generation = ? AND lease_until > ?", record.PayloadBody, record.PayloadSHA256, record.RequestID, record.DeliveryID, lease.Token, lease.Generation, now)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("lease lost while materializing delivery")
+	}
+	return nil
+}
+
+func attemptWebhookDelivery(ctx context.Context, webhook *Webhook, record *WebhookDeliveryRecord, lease Lease, cancelReason string) DeliveryOutcome {
+	switch {
+	case webhook == nil:
+		return DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: "target_deleted"}
+	case cancelReason != "":
+		return DeliveryOutcome{Kind: OutcomeCancelled, ErrorCode: cancelReason}
+	}
+	remaining := lease.Until.Sub(lease.databaseTime) - time.Since(lease.wallStarted)
+	if remaining <= 0 {
+		return DeliveryOutcome{Kind: OutcomeRetry, ErrorCode: "lease_expired"}
+	}
+	sendCtx, cancelSend := context.WithTimeout(ctx, remaining)
+	defer cancelSend()
+	if err := sendPersistedWebhook(sendCtx, webhook, record); err != nil {
+		if lease.Attempt >= deliveryMaxAttempt {
+			return DeliveryOutcome{Kind: OutcomeFailed, ErrorCode: "delivery_failed"}
+		}
+		return DeliveryOutcome{Kind: OutcomeRetry, ErrorCode: "delivery_failed"}
+	}
+	return DeliveryOutcome{Kind: OutcomeDelivered}
+}
+
+func prepareClaimedDelivery(s *xorm.Session, id string, lease Lease) (*WebhookDeliveryRecord, *Webhook, string, error) {
+	record := &WebhookDeliveryRecord{}
+	has, err := s.Where("delivery_id = ?", id).Get(record)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if !has {
+		return nil, nil, "", fmt.Errorf("claimed delivery not found")
+	}
+	webhook := &Webhook{}
+	has, err = s.Where("id = ?", record.WebhookID).Get(webhook)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if err := materializeDelivery(s, record, lease); err != nil {
+		return record, webhook, "", err
+	}
+	if !has {
+		return record, nil, "", nil
+	}
+	reason, err := deliveryAuthorization(s, webhook, record)
+	return record, webhook, reason, err
 }

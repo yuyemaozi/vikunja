@@ -17,6 +17,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -56,8 +57,22 @@ func init() {
 
 // Execute starts the application
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	command, err := rootCmd.ExecuteC()
+	if err == nil {
+		return
 	}
+	for current := command; current != nil; current = current.Parent() {
+		if current == webhookDeliveriesCmd {
+			var commandError *webhookCLIError
+			if errors.As(err, &commandError) {
+				fmt.Fprintln(os.Stderr, commandError.message)
+				os.Exit(commandError.code)
+			}
+			// Cobra flag parsing errors may include raw user input.
+			fmt.Fprintln(os.Stderr, "Invalid webhook-deliveries parameters")
+			os.Exit(2)
+		}
+	}
+	fmt.Println(err)
+	os.Exit(1)
 }

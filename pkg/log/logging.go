@@ -27,6 +27,13 @@ import (
 // logInstance is the instance of the logger which is used under the hood to log
 var logInstance *slog.Logger
 
+// outputOverride is set by machine-readable CLI commands before initialization.
+// It also applies when configuration rebuilds the standard and library loggers.
+var outputOverride io.Writer
+
+// SetOutputOverride redirects logs for the lifetime of this command process.
+func SetOutputOverride(writer io.Writer) { outputOverride = writer }
+
 // IsInitialized returns true if the logger has been initialized.
 func IsInitialized() bool {
 	return logInstance != nil
@@ -38,7 +45,11 @@ var logPath = "."
 
 // InitLogger initializes the global log handler
 func InitLogger() {
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	writer := io.Writer(os.Stdout)
+	if outputOverride != nil {
+		writer = outputOverride
+	}
+	handler := slog.NewTextHandler(writer, &slog.HandlerOptions{Level: slog.LevelInfo})
 	logInstance = slog.New(handler)
 }
 
@@ -115,6 +126,9 @@ func (wrapLogger) Debugf(format string, args ...interface{}) {
 
 // GetLogWriter returns the writer to where the normal log goes, depending on the config
 func getLogWriter(logfmt string, logfile string) (writer io.Writer) {
+	if outputOverride != nil {
+		return outputOverride
+	}
 	writer = os.Stdout // Set the default case to prevent nil pointer panics
 	switch logfmt {
 	case "file":

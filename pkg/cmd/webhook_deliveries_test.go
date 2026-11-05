@@ -66,8 +66,41 @@ func TestDeliveryResultJSON(t *testing.T) {
 		Items   []map[string]any `json:"items"`
 	}
 	require.NoError(t, json.Unmarshal(payload, &decoded))
-	assert.Equal(t, 1, decoded.Summary["requested"])
+	assert.Equal(t, 1, decoded.Summary["selected"])
 	assert.Equal(t, 1, decoded.Summary["delivered"])
+	assert.Len(t, decoded.Summary, 7)
 	require.Len(t, decoded.Items, 1)
 	assert.Equal(t, "delivered", decoded.Items[0]["status"])
+}
+
+func TestDeliveryResultExitPriority(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		statuses []string
+		code     int
+	}{
+		{"empty", nil, 0}, {"resolved", []string{"delivered", "cancelled", "already_resolved"}, 0},
+		{"busy", []string{"delivered", "busy"}, 2}, {"missing", []string{"not_found"}, 2},
+		{"failure beats busy", []string{"busy", "failed"}, 1}, {"busy cannot hide error", []string{"error", "busy"}, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			results := make([]models.DeliveryResult, 0, len(test.statuses))
+			for _, status := range test.statuses {
+				results = append(results, models.DeliveryResult{Status: status})
+			}
+			payload, code, err := deliveryResultsJSON(results, "")
+			require.NoError(t, err)
+			assert.Equal(t, test.code, code)
+			var parsed struct {
+				Summary map[string]int      `json:"summary"`
+				Items   []map[string]string `json:"items"`
+			}
+			require.NoError(t, json.Unmarshal(payload, &parsed))
+			assert.Len(t, parsed.Summary, 7)
+			assert.Equal(t, len(results), parsed.Summary["selected"])
+			for _, item := range parsed.Items {
+				assert.Contains(t, item, "error_code")
+			}
+		})
+	}
 }

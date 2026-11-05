@@ -58,11 +58,14 @@ func loadDelivery(t *testing.T, deliveryID string) *WebhookDeliveryRecord {
 
 func allowLoopbackWebhook(t *testing.T) {
 	t.Helper()
+	previousEnabled := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
 	previousAllow := config.OutgoingRequestsAllowNonRoutableIPs.GetBool()
 	previousClient := webhookClient
 	config.OutgoingRequestsAllowNonRoutableIPs.Set(true)
 	webhookClient = nil
 	t.Cleanup(func() {
+		config.WebhooksEnabled.Set(previousEnabled)
 		config.OutgoingRequestsAllowNonRoutableIPs.Set(previousAllow)
 		webhookClient = previousClient
 	})
@@ -195,17 +198,20 @@ func TestClaimWebhookDeliveryForRecoveryIsExclusive(t *testing.T) {
 	require.NoError(t, s.Commit())
 	_ = s.Close()
 
-	claimSession := db.NewAutocommitSession()
-	claimed, err := ClaimWebhookDeliveryForRecovery(claimSession, record.DeliveryID)
-	_ = claimSession.Close()
+	claimSession := db.NewSession()
+	lease, claimed, err := ClaimWebhookDelivery(claimSession, record.DeliveryID, DeliveryModeRecover, time.Now().UTC(), time.Minute)
 	require.NoError(t, err)
-	assert.True(t, claimed)
+	require.Equal(t, "processing", claimed.Status)
+	require.NotEmpty(t, lease.Token)
+	require.NoError(t, claimSession.Commit())
+	require.NoError(t, claimSession.Close())
+	secondSession := db.NewSession()
+	defer secondSession.Close()
+	otherLease, again, err := ClaimWebhookDelivery(secondSession, record.DeliveryID, DeliveryModeRecover, time.Now().UTC(), time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, "busy", again.Status)
+	assert.Empty(t, otherLease.Token)
 
-	secondSession := db.NewAutocommitSession()
-	claimedAgain, err := ClaimWebhookDeliveryForRecovery(secondSession, record.DeliveryID)
-	_ = secondSession.Close()
-	require.NoError(t, err)
-	assert.False(t, claimedAgain)
 }
 
 func TestRecoverableWebhookDeliveriesSelectsDueAndExpired(t *testing.T) {

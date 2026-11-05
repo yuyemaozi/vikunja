@@ -27,42 +27,67 @@ import (
 
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/initialize"
+	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
+	"github.com/google/uuid"
 
 	"github.com/spf13/cobra"
 )
 
+// webhookCLIError defers process exit until command-owned resources are closed.
+type webhookCLIError struct {
+	code    int
+	message string
+}
+
+func (e *webhookCLIError) Error() string { return e.message }
+
+func webhookParameterError(message string) error { return &webhookCLIError{2, message} }
+
 var webhookDeliveriesCmd = &cobra.Command{
-	Use:   "webhook-deliveries",
-	Short: "Inspect and retry durable webhook deliveries",
+	Use:           "webhook-deliveries",
+	Short:         "Inspect and retry durable webhook deliveries",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+}
+
+func initWebhookCommand(cmd *cobra.Command, _ []string) error {
+	format, _ := cmd.Flags().GetString("format")
+	if format != "json" && format != "table" {
+		return webhookParameterError("format must be table or json")
+	}
+	log.SetOutputOverride(os.Stderr)
+	initialize.FullInitWithoutAsync()
+	return nil
 }
 
 var webhookDeliveriesListFormat string
-
 var webhookDeliveriesListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List pending and failed webhook deliveries",
-	PreRun: func(_ *cobra.Command, _ []string) {
-		initialize.FullInitWithoutAsync()
-	},
-	Run: func(_ *cobra.Command, _ []string) {
-		s := db.NewSession()
+	Use: "list", Short: "List pending and failed webhook deliveries",
+	Args:    cobra.NoArgs,
+	PreRunE: initWebhookCommand,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		queryCtx, cancelQuery := context.WithTimeout(cmd.Context(), 5*time.Second)
+		defer cancelQuery()
+		s := db.NewReadSession()
+		db.SetSessionContext(queryCtx, s)
 		defer s.Close()
 		records, err := models.ListWebhookDeliveries(s, nil)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Could not list webhook deliveries: %v\n", err)
-			os.Exit(1)
+			return &webhookCLIError{1, "Could not list webhook deliveries: db_error"}
 		}
 		if webhookDeliveriesListFormat == "json" {
 			payload, err := webhookDeliveriesJSON(records)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Could not encode webhook deliveries: %v\n", err)
-				os.Exit(1)
+				return &webhookCLIError{1, "Could not encode webhook deliveries"}
 			}
-			_, _ = fmt.Fprintln(os.Stdout, string(payload))
-			return
+			if _, err = fmt.Fprintln(cmd.OutOrStdout(), string(payload)); err != nil {
+				return &webhookCLIError{1, "Could not write webhook deliveries"}
+			}
+			return nil
 		}
-		printWebhookDeliveries(os.Stdout, records)
+		printWebhookDeliveries(cmd.OutOrStdout(), records)
+		return nil
 	},
 }
 
@@ -71,110 +96,118 @@ var (
 	webhookDeliveriesRecoverTimeout int
 	webhookDeliveriesRecoverFormat  string
 )
-
 var webhookDeliveriesRecoverCmd = &cobra.Command{
-	Use:     "recover-pending",
-	Aliases: []string{"recover"},
-	Short:   "Claim and deliver stranded pending webhook deliveries",
-	PreRun: func(_ *cobra.Command, _ []string) {
-		initialize.FullInitWithoutAsync()
-	},
-	Run: func(_ *cobra.Command, _ []string) {
+	Use: "recover-pending", Aliases: []string{"recover"},
+	Short: "Claim and deliver stranded pending webhook deliveries",
+	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if webhookDeliveriesRecoverLimit < 1 || webhookDeliveriesRecoverLimit > 1000 {
-			fmt.Fprintln(os.Stderr, "limit must be between 1 and 1000")
-			os.Exit(2)
+			return webhookParameterError("limit must be between 1 and 1000")
 		}
 		if webhookDeliveriesRecoverTimeout < 1 || webhookDeliveriesRecoverTimeout > 3600 {
-			fmt.Fprintln(os.Stderr, "timeout must be between 1 and 3600 seconds")
-			os.Exit(2)
+			return webhookParameterError("timeout must be between 1 and 3600 seconds")
 		}
-
-		s := db.NewAutocommitSession()
-		records, err := models.RecoverableWebhookDeliveries(s, time.Now().UTC(), webhookDeliveriesRecoverLimit)
-		_ = s.Close()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Could not list pending webhook deliveries: %v\n", err)
-			os.Exit(1)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(webhookDeliveriesRecoverTimeout)*time.Second)
+		return initWebhookCommand(cmd, args)
+	},
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(webhookDeliveriesRecoverTimeout)*time.Second)
 		defer cancel()
-
-		items := make([]map[string]any, 0, len(records))
-		failures := 0
+		queryCtx, cancelQuery := context.WithTimeout(ctx, 5*time.Second)
+		s := db.NewReadSession()
+		db.SetSessionContext(queryCtx, s)
+		// The database clock owns recovery eligibility.
+		records, err := models.RecoverableWebhookDeliveries(s, time.Time{}, webhookDeliveriesRecoverLimit)
+		_ = s.Close()
+		cancelQuery()
+		if err != nil {
+			return writeDeliveryResults(cmd, []models.DeliveryResult{}, "db_error")
+		}
+		results := make([]models.DeliveryResult, 0, len(records))
 		for _, record := range records {
-			result := models.RunWebhookDelivery(ctx, record.DeliveryID, models.DeliveryModeRecover)
-			if result.Status == "error" || result.Status == "failed" {
-				failures++
+			result := models.DeliveryResult{DeliveryID: record.DeliveryID, Status: "error", ErrorCode: "context_cancelled"}
+			if ctx.Err() == nil {
+				result = models.RunWebhookDelivery(ctx, record.DeliveryID, models.DeliveryModeRecover)
 			}
-			item := map[string]any{
-				"delivery_id": record.DeliveryID,
-				"status":      result.Status,
-			}
-			if result.ErrorCode != "" {
-				item["error_code"] = result.ErrorCode
-			}
-			items = append(items, item)
+			results = append(results, result)
 		}
-
-		if webhookDeliveriesRecoverFormat == "json" {
-			payload, err := json.Marshal(map[string]any{
-				"summary": map[string]int{
-					"requested": len(records),
-					"errors":    failures,
-				},
-				"items": items,
-			})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Could not encode recovery result: %v\n", err)
-				os.Exit(1)
-			}
-			_, _ = fmt.Fprintln(os.Stdout, string(payload))
-		} else {
-			for _, item := range items {
-				fmt.Printf("Webhook delivery %s %s\n", item["delivery_id"], item["status"])
-			}
-		}
-		if failures > 0 {
-			os.Exit(1)
-		}
+		return writeDeliveryResults(cmd, results, "")
 	},
 }
 
 var webhookDeliveriesRetryFormat string
-
 var webhookDeliveriesRetryCmd = &cobra.Command{
-	Use:   "retry <delivery-id>",
-	Short: "Requeue one failed webhook delivery",
-	Args:  cobra.ExactArgs(1),
-	PreRun: func(_ *cobra.Command, _ []string) {
-		initialize.FullInitWithoutAsync()
+	Use: "retry <delivery-id>", Short: "Requeue one failed webhook delivery",
+	Args: func(_ *cobra.Command, args []string) error {
+		if len(args) != 1 {
+			return webhookParameterError("retry requires one delivery UUID")
+		}
+		if _, err := uuid.Parse(args[0]); err != nil {
+			return webhookParameterError("delivery ID must be a UUID")
+		}
+		return nil
 	},
-	Run: func(_ *cobra.Command, args []string) {
-		result := models.RunWebhookDelivery(context.Background(), args[0], models.DeliveryModeRetry)
-		if webhookDeliveriesRetryFormat == "json" {
-			payload, err := deliveryResultJSON(result)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Could not encode delivery result: %v\n", err)
-				os.Exit(1)
-			}
-			_, _ = fmt.Fprintln(os.Stdout, string(payload))
-		}
-		switch result.Status {
-		case "delivered", "cancelled", "already_resolved":
-			if webhookDeliveriesRetryFormat != "json" {
-				fmt.Printf("Webhook delivery %s %s\n", args[0], result.Status)
-			}
-		case "not_found", "busy":
-			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s\n", args[0], result.Status)
-			os.Exit(2)
-		default:
-			fmt.Fprintf(os.Stderr, "Webhook delivery %s %s (%s)\n", args[0], result.Status, result.ErrorCode)
-			os.Exit(1)
-		}
+	PreRunE: initWebhookCommand,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		result := models.RunWebhookDelivery(cmd.Context(), args[0], models.DeliveryModeRetry)
+		return writeDeliveryResults(cmd, []models.DeliveryResult{result}, "")
 	},
 }
 
+// Every selected item contributes to exactly one result category.
+func deliveryResultsJSON(results []models.DeliveryResult, batchError string) ([]byte, int, error) {
+	summary := map[string]int{"selected": len(results), "delivered": 0, "cancelled": 0, "already_resolved": 0, "busy": 0, "failed": 0, "errors": 0}
+	items := make([]map[string]string, 0, len(results))
+	code := 0
+	for _, result := range results {
+		items = append(items, map[string]string{"delivery_id": result.DeliveryID, "status": result.Status, "error_code": result.ErrorCode})
+		switch result.Status {
+		case "delivered", "cancelled", "already_resolved":
+			summary[result.Status]++
+		case "busy":
+			summary["busy"]++
+			if code == 0 {
+				code = 2
+			}
+		case "not_found":
+			summary["errors"]++
+			if code == 0 {
+				code = 2
+			}
+		case "failed":
+			summary["failed"]++
+			code = 1
+		default:
+			summary["errors"]++
+			code = 1
+		}
+	}
+	if batchError != "" {
+		summary["errors"]++
+		code = 1
+	}
+	payload, err := json.Marshal(map[string]any{"summary": summary, "items": items})
+	return payload, code, err
+}
+
+func writeDeliveryResults(cmd *cobra.Command, results []models.DeliveryResult, batchError string) error {
+	payload, code, err := deliveryResultsJSON(results, batchError)
+	if err != nil {
+		return &webhookCLIError{1, "Could not encode webhook results"}
+	}
+	if _, err := fmt.Fprintln(cmd.OutOrStdout(), string(payload)); err != nil {
+		return &webhookCLIError{1, "Could not write webhook results"}
+	}
+	if code != 0 {
+		return &webhookCLIError{code, "Webhook delivery command did not resolve all selected deliveries"}
+	}
+	return nil
+}
+
 func init() {
+	for _, command := range []*cobra.Command{webhookDeliveriesListCmd, webhookDeliveriesRetryCmd, webhookDeliveriesRecoverCmd} {
+		command.SilenceErrors = true
+		command.SilenceUsage = true
+	}
 	webhookDeliveriesRecoverCmd.Flags().IntVar(&webhookDeliveriesRecoverLimit, "limit", 100, "maximum deliveries in this batch (1-1000)")
 	webhookDeliveriesRecoverCmd.Flags().IntVar(&webhookDeliveriesRecoverTimeout, "timeout", 300, "batch timeout in seconds (1-3600)")
 	webhookDeliveriesRecoverCmd.Flags().StringVar(&webhookDeliveriesRecoverFormat, "format", "table", "output format: table or json")
@@ -196,19 +229,24 @@ func init() {
 
 func printWebhookDeliveries(out io.Writer, records []*models.WebhookDeliveryRecord) {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "DELIVERY ID\tEVENT\tSTATUS\tATTEMPTS\tCREATED\tLAST ATTEMPT")
+	_, _ = fmt.Fprintln(w, "DELIVERY ID\tEVENT\tSTATUS\tATTEMPTS\tGENERATION\tLEASE UNTIL\tERROR\tCREATED\tLAST ATTEMPT")
 	for _, record := range records {
 		lastAttempt := "-"
+		leaseUntil := "-"
+		if record.LeaseUntil != nil {
+			leaseUntil = record.LeaseUntil.UTC().Format(time.RFC3339)
+		}
 		if record.LastAttemptAt != nil {
 			lastAttempt = record.LastAttemptAt.Format("2006-01-02T15:04:05Z07:00")
 		}
 		_, _ = fmt.Fprintf(
 			w,
-			"%s\t%s\t%s\t%d\t%s\t%s\n",
+			"%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n",
 			record.DeliveryID,
 			record.EventName,
 			record.Status,
 			record.AttemptCount,
+			record.RetryGeneration, leaseUntil, record.LastErrorCode,
 			record.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 			lastAttempt,
 		)
@@ -224,6 +262,8 @@ type webhookDeliveryJSON struct {
 	CreatedAt     string `json:"created_at"`
 	LastAttemptAt string `json:"last_attempt_at,omitempty"`
 	LastErrorCode string `json:"last_error_code,omitempty"`
+	Generation    int    `json:"generation"`
+	LeaseUntil    string `json:"lease_until,omitempty"`
 }
 
 func webhookDeliveriesJSON(records []*models.WebhookDeliveryRecord) ([]byte, error) {
@@ -231,11 +271,15 @@ func webhookDeliveriesJSON(records []*models.WebhookDeliveryRecord) ([]byte, err
 	for _, record := range records {
 		item := webhookDeliveryJSON{
 			DeliveryID:    record.DeliveryID,
+			Generation:    record.RetryGeneration,
 			Event:         record.EventName,
 			Status:        record.Status,
 			Attempts:      record.AttemptCount,
 			CreatedAt:     record.CreatedAt.UTC().Format(time.RFC3339),
 			LastErrorCode: record.LastErrorCode,
+		}
+		if record.LeaseUntil != nil {
+			item.LeaseUntil = record.LeaseUntil.UTC().Format(time.RFC3339)
 		}
 		if record.LastAttemptAt != nil {
 			item.LastAttemptAt = record.LastAttemptAt.UTC().Format(time.RFC3339)
@@ -246,27 +290,6 @@ func webhookDeliveriesJSON(records []*models.WebhookDeliveryRecord) ([]byte, err
 }
 
 func deliveryResultJSON(result models.DeliveryResult) ([]byte, error) {
-	item := map[string]any{
-		"delivery_id": result.DeliveryID,
-		"status":      result.Status,
-	}
-	if result.ErrorCode != "" {
-		item["error_code"] = result.ErrorCode
-	}
-	return json.Marshal(map[string]any{
-		"summary": map[string]any{
-			"requested": 1,
-			"delivered": boolToInt(result.Status == "delivered" || result.Status == "cancelled"),
-			"failed":    boolToInt(result.Status == "failed"),
-			"errors":    boolToInt(result.Status == "error"),
-		},
-		"items": []map[string]any{item},
-	})
-}
-
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
+	payload, _, err := deliveryResultsJSON([]models.DeliveryResult{result}, "")
+	return payload, err
 }

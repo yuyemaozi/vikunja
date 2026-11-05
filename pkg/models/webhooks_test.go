@@ -67,7 +67,8 @@ func TestWebhookErrorResponseBodyIsNotLogged(t *testing.T) {
 	logged, err := os.ReadFile(filepath.Join(logDir, "standard.log"))
 	require.NoError(t, err)
 
-	assert.Contains(t, string(logged), "from webhook 42")
+	assert.Contains(t, string(logged), "webhook.http.failed")
+	assert.Contains(t, string(logged), "webhook_id=42")
 	assert.Zero(t, strings.Count(string(logged), bodyMarker), "the response body must never be logged")
 }
 

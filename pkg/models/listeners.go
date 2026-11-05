@@ -17,7 +17,6 @@
 package models
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -1239,7 +1238,7 @@ func (wdl *WebhookDeliveryListener) Handle(msg *message.Message) error {
 		return fmt.Errorf("webhook delivery event has no delivery id")
 	}
 
-	result := RunWebhookDelivery(context.Background(), evt.DeliveryID, DeliveryModeNormal)
+	result := RunWebhookDelivery(msg.Context(), evt.DeliveryID, DeliveryModeNormal)
 	if result.Status == "error" {
 		msg.Metadata.Set(events.MetadataSkipErrorReporting, "true")
 		return fmt.Errorf("webhook delivery %s failed: %s", evt.DeliveryID, result.ErrorCode)
