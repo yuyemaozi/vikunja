@@ -18,7 +18,14 @@ package events
 
 import (
 	"context"
+	"errors"
+
 	"testing"
+
+	"code.vikunja.io/api/pkg/config"
+	"github.com/google/uuid"
+	_ "github.com/mattn/go-sqlite3"
+	"xorm.io/xorm"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +73,9 @@ func TestNonWebhookEventsKeepOriginalBehavior(t *testing.T) {
 }
 
 func TestTransactionalSinkRejectsAutocommit(t *testing.T) {
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
 	resetTransactionalSinks()
 	t.Cleanup(resetTransactionalSinks)
 	sink := func(any, PreparedEvent, RequestMeta) ([]Event, error) { return nil, nil }
@@ -99,4 +109,68 @@ func TestBoundRequestIDIsNotReplaced(t *testing.T) {
 	BindRequestMeta(key, WithRequestMeta(context.Background(), &RequestMeta{RequestID: first}))
 	BindRequestMeta(key, WithRequestMeta(context.Background(), &RequestMeta{RequestID: second}))
 	assert.Equal(t, first, pendingQueue(key).requestID)
+}
+
+func TestWebhookRegisteredSourceRejectsPublicDispatch(t *testing.T) {
+	resetTransactionalSinks()
+	t.Cleanup(resetTransactionalSinks)
+	Fake()
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
+	require.NoError(t, RegisterTransactionalSink([]string{(&transactionalTestEvent{}).Name()}, func(any, PreparedEvent, RequestMeta) ([]Event, error) { return nil, nil }))
+	require.ErrorIs(t, Dispatch(&transactionalTestEvent{}), ErrWebhookTransactionRequired)
+	require.ErrorIs(t, DispatchWithContext(context.Background(), &transactionalTestEvent{}), ErrWebhookTransactionRequired)
+	assert.Zero(t, CountDispatchedEvents((&transactionalTestEvent{}).Name()))
+	config.WebhooksEnabled.Set(false)
+	key := new(int)
+	defer CleanupPending(key)
+	require.NoError(t, DispatchOnCommit(key, &transactionalTestEvent{}))
+	DispatchPending(context.Background(), key)
+	require.NoError(t, Dispatch(&transactionalTestEvent{}))
+	assert.Equal(t, 2, CountDispatchedEvents((&transactionalTestEvent{}).Name()))
+}
+
+type mutablePreparedTestEvent struct{ Value string }
+
+func (*mutablePreparedTestEvent) Name() string { return "webhook.test.frozen" }
+
+func TestTransactionalSinkFailureNeverEnqueues(t *testing.T) {
+	resetTransactionalSinks()
+	t.Cleanup(resetTransactionalSinks)
+	Fake()
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
+	engine, err := xorm.NewEngine("sqlite3", ":memory:")
+	require.NoError(t, err)
+	defer engine.Close()
+	session := engine.NewSession()
+	defer session.Close()
+	require.NoError(t, session.Begin())
+	defer CleanupPending(session)
+	const requestID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e501"
+	BindRequestMeta(session, WithRequestMeta(context.Background(), &RequestMeta{RequestID: requestID}))
+	sentinel := errors.New("synthetic sink failure")
+	event := &mutablePreparedTestEvent{Value: "before"}
+	var frozen PreparedEvent
+	require.NoError(t, RegisterTransactionalSink([]string{event.Name()}, func(key any, prepared PreparedEvent, meta RequestMeta) ([]Event, error) {
+		assert.Same(t, session, key)
+		assert.True(t, session.IsInTx())
+		assert.Equal(t, requestID, meta.RequestID)
+		_, parseErr := uuid.Parse(prepared.ID)
+		assert.NoError(t, parseErr)
+		assert.False(t, prepared.OccurredAt.IsZero())
+		frozen = prepared
+		return []Event{&testEvent{}}, sentinel
+	}))
+	require.ErrorIs(t, DispatchOnCommit(session, event), sentinel)
+	event.Value = "after"
+	assert.JSONEq(t, `{"Value":"before"}`, string(frozen.Payload))
+	assert.Empty(t, pendingQueue(session).events)
+	require.NoError(t, session.Rollback())
+	CleanupPending(session)
+	DispatchPending(context.Background(), session)
+	assert.Zero(t, CountDispatchedEvents(event.Name()))
+	assert.Zero(t, CountDispatchedEvents((&testEvent{}).Name()))
 }

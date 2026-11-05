@@ -262,6 +262,15 @@ func Dispatch(event Event) error {
 // context (see WithRequestMeta) onto the message metadata, so listeners can
 // attribute the event to the originating HTTP request.
 func DispatchWithContext(ctx context.Context, event Event) error {
+	if _, registered := lookupTransactionalSink(event.Name()); registered && config.WebhooksEnabled.GetBool() {
+		return ErrWebhookTransactionRequired
+	}
+	return dispatchCommittedWithContext(ctx, event)
+}
+
+// Only DispatchPending may publish a registered source already staged in its
+// owner's committed transaction. Public dispatch cannot bypass persistence.
+func dispatchCommittedWithContext(ctx context.Context, event Event) error {
 	if isUnderTest {
 		dispatchedTestEvents = append(dispatchedTestEvents, event)
 		return nil
@@ -311,7 +320,7 @@ func pendingQueue(key any) *pendingEventQueue {
 // Call CleanupPending(key) on rollback to discard them.
 func DispatchOnCommit(key any, event Event) error {
 	sink, registered := lookupTransactionalSink(event.Name())
-	if !registered {
+	if !registered || !config.WebhooksEnabled.GetBool() {
 		queue := pendingQueue(key)
 		queue.mu.Lock()
 		queue.events = append(queue.events, event)
@@ -384,7 +393,7 @@ func DispatchPending(ctx context.Context, key any) {
 		}
 	}
 	for _, event := range queue.events {
-		if err := DispatchWithContext(ctx, event); err != nil {
+		if err := dispatchCommittedWithContext(ctx, event); err != nil {
 			log.Errorf("Failed to dispatch event %s: %v", event.Name(), err)
 		}
 	}
