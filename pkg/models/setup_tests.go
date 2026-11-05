@@ -82,6 +82,7 @@ func SetupTests() {
 		"task_buckets",
 		"sessions",
 		"webhooks",
+		"webhook_deliveries",
 		"totp",
 		"oauth_codes",
 		"notifications",
