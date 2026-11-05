@@ -727,6 +727,7 @@ func TestRemoveStaleRelations_SkipsForbiddenDeletion(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, s.Commit())
+	require.NoError(t, s.Begin())
 
 	relationCond := map[string]interface{}{
 		"task_id":       baseTask.ID,
@@ -740,6 +741,7 @@ func TestRemoveStaleRelations_SkipsForbiddenDeletion(t *testing.T) {
 
 	err = removeStaleRelations(s, owner, &models.Task{ID: baseTask.ID}, map[models.RelationKind][]*models.Task{})
 	require.NoError(t, err)
+	require.NoError(t, s.Commit())
 	db.AssertMissing(t, "task_relations", relationCond)
 }
 
@@ -766,6 +768,7 @@ func TestPersistRelations_AuthorizesRelationUIDs(t *testing.T) {
 		foreignTask = &models.Task{Title: "persist-rel foreign", ProjectID: privateProj.ID, UID: "uid-persist-rel-foreign"}
 		require.NoError(t, foreignTask.Create(s, owner))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		return
 	}
@@ -779,6 +782,7 @@ func TestPersistRelations_AuthorizesRelationUIDs(t *testing.T) {
 		}
 		require.NoError(t, persistRelations(s, writer, &models.Task{ID: taskA.ID, ProjectID: proj.ID}, newRelations))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		db.AssertMissing(t, "task_relations", map[string]interface{}{
 			"task_id":       taskA.ID,
@@ -807,6 +811,7 @@ func TestPersistRelations_AuthorizesRelationUIDs(t *testing.T) {
 		}
 		require.NoError(t, persistRelations(s, writer, &models.Task{ID: taskA.ID, ProjectID: proj.ID}, newRelations))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		placeholder := &models.Task{}
 		found, err := s.Where("project_id = ? AND title = ?", proj.ID, "DUMMY-UID-uid-persist-rel-unknown").Get(placeholder)
@@ -826,12 +831,14 @@ func TestPersistRelations_AuthorizesRelationUIDs(t *testing.T) {
 		taskC := &models.Task{Title: "persist-rel peer", ProjectID: proj.ID, UID: "uid-persist-rel-peer"}
 		require.NoError(t, taskC.Create(s, &user.User{ID: 1}))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		newRelations := map[models.RelationKind][]*models.Task{
 			models.RelationKindParenttask: {{UID: "uid-persist-rel-peer"}},
 		}
 		require.NoError(t, persistRelations(s, writer, &models.Task{ID: taskA.ID, ProjectID: proj.ID}, newRelations))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		db.AssertExists(t, "task_relations", map[string]interface{}{
 			"task_id":       taskA.ID,
@@ -854,6 +861,7 @@ func TestPersistRelations_BoundsPlaceholders(t *testing.T) {
 		taskA = &models.Task{Title: "persist-rel fan-out base", ProjectID: proj.ID, UID: "uid-persist-rel-fanout-base"}
 		require.NoError(t, taskA.Create(s, owner))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 		return
 	}
 
@@ -866,6 +874,7 @@ func TestPersistRelations_BoundsPlaceholders(t *testing.T) {
 		}
 		require.NoError(t, persistRelations(s, owner, &models.Task{ID: taskA.ID, ProjectID: proj.ID}, newRelations))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		db.AssertCount(t, "tasks", builder.Eq{"project_id": proj.ID, "title": "DUMMY-UID-uid-dup"}, 1)
 	})
@@ -881,6 +890,7 @@ func TestPersistRelations_BoundsPlaceholders(t *testing.T) {
 		newRelations := map[models.RelationKind][]*models.Task{models.RelationKindParenttask: related}
 		require.NoError(t, persistRelations(s, owner, &models.Task{ID: taskA.ID, ProjectID: proj.ID}, newRelations))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		db.AssertCount(t, "tasks", builder.Like{"title", "DUMMY-UID-uid-fanout-%"}, int64(maxPlaceholdersPerVTODO))
 	})
@@ -898,10 +908,12 @@ func TestPersistRelations_BoundsPlaceholders(t *testing.T) {
 			related = append(related, &models.Task{UID: existing.UID})
 		}
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		newRelations := map[models.RelationKind][]*models.Task{models.RelationKindSubtask: related}
 		require.NoError(t, persistRelations(s, owner, &models.Task{ID: taskA.ID, ProjectID: proj.ID}, newRelations))
 		require.NoError(t, s.Commit())
+		require.NoError(t, s.Begin())
 
 		db.AssertCount(t, "task_relations", builder.And(builder.Eq{"task_id": taskA.ID, "relation_kind": models.RelationKindSubtask}, builder.In("other_task_id", existingIDs)), int64(len(existingIDs)))
 	})
