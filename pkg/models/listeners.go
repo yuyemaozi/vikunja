@@ -1604,27 +1604,12 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 		return err
 	}
 
-	// Look up user-level webhooks for user-directed events
 	if isUserDirected {
-		userID := getUserIDFromAnyEvent(event)
-		if userID > 0 {
-			userWebhooks := []*Webhook{}
-			err = s.Where("user_id = ? AND (project_id IS NULL OR project_id = 0)", userID).
-				OrderBy("id ASC").
-				Find(&userWebhooks)
-			if err != nil {
-				return err
-			}
-
-			for _, w := range userWebhooks {
-				for _, e := range w.Events {
-					if e == wl.EventName {
-						matchingWebhooks = append(matchingWebhooks, w)
-						break
-					}
-				}
-			}
+		userWebhooks, err := userWebhooksForEvent(s, getUserIDFromAnyEvent(event), wl.EventName)
+		if err != nil {
+			return err
 		}
+		matchingWebhooks = append(matchingWebhooks, userWebhooks...)
 	}
 
 	if len(matchingWebhooks) == 0 {
@@ -1880,6 +1865,7 @@ func (s *RevokeSessionsOnAccountLock) Handle(msg *message.Message) (err error) {
 	}
 
 	sess := db.NewSession()
+	events.BindRequestMeta(sess, msg.Context())
 	defer sess.Close()
 	defer events.CleanupPending(sess)
 
@@ -1892,4 +1878,21 @@ func (s *RevokeSessionsOnAccountLock) Handle(msg *message.Message) (err error) {
 	}
 	events.DispatchPending(msg.Context(), sess)
 	return nil
+}
+
+func userWebhooksForEvent(s *xorm.Session, userID int64, eventName string) ([]*Webhook, error) {
+	if userID <= 0 {
+		return nil, nil
+	}
+	webhooks := []*Webhook{}
+	if err := s.Where("user_id = ? AND (project_id IS NULL OR project_id = 0)", userID).OrderBy("id ASC").Find(&webhooks); err != nil {
+		return nil, err
+	}
+	selected := []*Webhook{}
+	for _, w := range webhooks {
+		if slices.Contains(w.Events, eventName) {
+			selected = append(selected, w)
+		}
+	}
+	return selected, nil
 }

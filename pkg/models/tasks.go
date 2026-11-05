@@ -1137,6 +1137,22 @@ func createTasks(s *xorm.Session, projectID int64, tasks []*Task, a web.Auth, up
 		}
 	}
 
+	if err := finalizeCreatedTasks(s, tasks, a, createdBy, p, updateAssignees); err != nil {
+		return err
+	}
+
+	if err := events.DispatchOnCommit(s, &TasksBatchCreatedEvent{
+		Tasks: tasks,
+		Doer:  createdBy,
+	}); err != nil {
+		return err
+	}
+
+	err = updateProjectLastUpdated(s, &Project{ID: projectID})
+	return
+}
+
+func finalizeCreatedTasks(s *xorm.Session, tasks []*Task, a web.Auth, createdBy *user.User, p *Project, updateAssignees bool) error {
 	// Link shares can't have subscriptions
 	_, creatorIsUser := a.(*user.User)
 
@@ -1177,15 +1193,7 @@ func createTasks(s *xorm.Session, projectID int64, tasks []*Task, a web.Auth, up
 		}
 	}
 
-	if err := events.DispatchOnCommit(s, &TasksBatchCreatedEvent{
-		Tasks: tasks,
-		Doer:  createdBy,
-	}); err != nil {
-		return err
-	}
-
-	err = updateProjectLastUpdated(s, &Project{ID: projectID})
-	return
+	return nil
 }
 
 func setTasksInBucketInViews(s *xorm.Session, views []*ProjectView, tasks []*Task, a web.Auth, setBucket bool, providedBuckets map[int64]*Bucket) ([]*TaskPosition, []*TaskBucket, error) {
