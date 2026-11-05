@@ -297,6 +297,9 @@ func newPostgresEngine(queryExecMode string) (engine *xorm.Engine, err error) {
 	if err != nil {
 		return
 	}
+	// Configure logging before initPostgresEngine pings or checks extensions.
+	// The default xorm logger writes to stdout and breaks JSON CLI output.
+	engine.SetLogger(log.NewXormLogger(config.LogEnabled.GetBool(), config.LogDatabase.GetString(), config.LogDatabaseLevel.GetString(), config.LogFormat.GetString()))
 	engine.SetSchema(config.DatabaseSchema.GetString())
 	engine.SetMaxOpenConns(config.DatabaseMaxOpenConnections.GetInt())
 	engine.SetMaxIdleConns(config.DatabaseMaxIdleConnections.GetInt())
