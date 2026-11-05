@@ -17,7 +17,10 @@
 package migration
 
 import (
+	"errors"
 	"fmt"
+
+	"github.com/go-sql-driver/mysql"
 
 	"src.techknowlogick.com/xormigrate"
 	"xorm.io/xorm"
@@ -50,6 +53,16 @@ func migrateWebhookDeliveriesStaging20261104000100(x *xorm.Engine) error {
 			"CREATE UNIQUE INDEX idx_webhook_deliveries_event_webhook " +
 				"ON webhook_deliveries (event_id, webhook_id)",
 		); err != nil {
+			if !isWebhookIndexDuplicate(err) {
+				return err
+			}
+			rows, queryErr := x.QueryString("SELECT COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'webhook_deliveries' AND INDEX_NAME = 'idx_webhook_deliveries_event_webhook' ORDER BY SEQ_IN_INDEX")
+			if queryErr != nil {
+				return queryErr
+			}
+			if len(rows) != 2 || rows[0]["COLUMN_NAME"] != "event_id" || rows[1]["COLUMN_NAME"] != "webhook_id" || rows[0]["NON_UNIQUE"] != "0" || rows[1]["NON_UNIQUE"] != "0" {
+				return fmt.Errorf("existing webhook index does not match unique event/webhook contract")
+			}
 			return nil
 		}
 		return nil
@@ -65,4 +78,9 @@ func init() {
 		Migrate:     migrateWebhookDeliveriesStaging20261104000100,
 		Rollback:    nil,
 	})
+}
+
+func isWebhookIndexDuplicate(err error) bool {
+	var mysqlError *mysql.MySQLError
+	return errors.As(err, &mysqlError) && mysqlError.Number == 1061
 }

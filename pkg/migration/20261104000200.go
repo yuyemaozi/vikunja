@@ -42,7 +42,7 @@ func migrateWebhookDeliveriesLease20261104000200(x *xorm.Engine) error {
 	// Legacy processing rows have no lease and cannot be fenced; make them claimable.
 	_, err := x.Exec(
 		"UPDATE webhook_deliveries SET status = 'pending', cycle_attempt_count = 0 " +
-			"WHERE status = 'processing'",
+			"WHERE status = 'processing' AND (lease_token IS NULL OR lease_token = '') AND lease_until IS NULL",
 	)
 	return err
 }

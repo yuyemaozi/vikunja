@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"code.vikunja.io/api/pkg/db"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,8 +39,8 @@ func (legacyDelivery20261104000200) TableName() string {
 }
 
 func TestWebhookMigration002ResetsLegacyProcessing(t *testing.T) {
-	x, err := db.CreateTestEngine()
-	require.NoError(t, err)
+	x := webhookMigrationTestEngine(t)
+	var err error
 
 	const backup = "webhook_deliveries_backup_20261104000200"
 	existed, err := x.IsTableExist("webhook_deliveries")
@@ -82,7 +80,7 @@ func TestWebhookMigration002ResetsLegacyProcessing(t *testing.T) {
 	for status, want := range expected {
 		count, err := x.Where("status = ?", status).Count(&legacyDelivery20261104000200{})
 		require.NoError(t, err)
-		assert.EqualValues(t, want, count, status)
+		assert.Equal(t, want, count, status)
 	}
 	processing, err := x.Where("status = ?", "processing").Count(&legacyDelivery20261104000200{})
 	require.NoError(t, err)
@@ -90,4 +88,20 @@ func TestWebhookMigration002ResetsLegacyProcessing(t *testing.T) {
 	generation, err := x.Where("status = ?", "pending").Cols("retry_generation").Get(&legacyDelivery20261104000200{})
 	require.NoError(t, err)
 	assert.True(t, generation)
+}
+
+func TestWebhookMigration002PreservesValidLeaseOnRerun(t *testing.T) {
+	x := webhookMigrationTestEngine(t)
+	require.NoError(t, x.Sync2(&legacyDelivery20261104000200{})) //nolint:forbidigo // Brand-new table in an isolated test database.
+	require.NoError(t, migrateWebhookDeliveriesLease20261104000200(x))
+	_, err := x.Exec("INSERT INTO webhook_deliveries (delivery_id,webhook_id,event_name,payload,status,created_at,lease_token,lease_until,cycle_attempt_count,retry_generation) VALUES (?,1,'task.updated','{}','processing',CURRENT_TIMESTAMP,?,?,5,3)", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "active-token", time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, migrateWebhookDeliveriesLease20261104000200(x))
+	rows, err := x.QueryString("SELECT status,cycle_attempt_count,lease_token,retry_generation FROM webhook_deliveries WHERE delivery_id=?", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "processing", rows[0]["status"])
+	assert.Equal(t, "5", rows[0]["cycle_attempt_count"])
+	assert.Equal(t, "active-token", rows[0]["lease_token"])
+	assert.Equal(t, "3", rows[0]["retry_generation"])
 }

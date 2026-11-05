@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"code.vikunja.io/api/pkg/db"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,8 +41,8 @@ func (legacyWebhookDelivery20261104000100) TableName() string {
 }
 
 func TestWebhookMigration001PreservesLegacyRows(t *testing.T) {
-	x, err := db.CreateTestEngine()
-	require.NoError(t, err)
+	x := webhookMigrationTestEngine(t)
+	var err error
 
 	const backup = "webhook_deliveries_backup_20261104000100"
 	existed, err := x.IsTableExist("webhook_deliveries")
