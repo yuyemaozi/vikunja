@@ -18,6 +18,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -185,105 +186,9 @@ func RegisterOverdueReminderCron() {
 		defer events.CleanupPending(s)
 		defer s.Close()
 
-		now := time.Now()
-
-		var dispatchSingle, dispatchBatch bool
-		if webhookEnabled {
-			var err error
-			dispatchSingle, dispatchBatch, err = overdueEventsWithListeners(s)
-			if err != nil {
-				log.Errorf("[Undone Overdue Tasks Reminder] Could not check for overdue event listeners: %s", err)
-				return
-			}
-		}
-
-		if !emailEnabled && !dispatchSingle && !dispatchBatch {
+		if err := sendOverdueReminders(s, time.Now(), emailEnabled, webhookEnabled); err != nil {
+			_ = s.Rollback()
 			return
-		}
-
-		var cond builder.Cond
-		if !dispatchSingle && !dispatchBatch {
-			cond = builder.Eq{"users.overdue_tasks_reminders_enabled": true}
-		}
-
-		uts, err := getUndoneOverdueTasks(s, now, cond)
-		if err != nil {
-			log.Errorf("[Undone Overdue Tasks Reminder] Could not get undone overdue tasks in the next minute: %s", err)
-			return
-		}
-
-		if len(uts) == 0 {
-			return
-		}
-
-		log.Debugf("[Undone Overdue Tasks Reminder] Sending reminders to %d users", len(uts))
-
-		taskIDs := []int64{}
-		for _, ut := range uts {
-			for _, t := range ut.allTasks() {
-				taskIDs = append(taskIDs, t.ID)
-			}
-		}
-
-		projects, err := GetProjectsMapSimpleByTaskIDs(s, taskIDs)
-		if err != nil {
-			log.Errorf("[Undone Overdue Tasks Reminder] Could not get projects for tasks: %s", err)
-			return
-		}
-
-		for _, ut := range uts {
-			tasks := ut.allTasks()
-
-			if emailEnabled && ut.user.OverdueTasksRemindersEnabled {
-				var n notifications.Notification = &UndoneTasksOverdueNotification{
-					User:     ut.user,
-					Assigned: ut.assigned,
-					Followed: ut.followed,
-					Projects: projects,
-				}
-
-				if len(tasks) == 1 {
-					n = &UndoneTaskOverdueNotification{
-						User:    ut.user,
-						Task:    tasks[0],
-						Project: projects[tasks[0].ProjectID],
-					}
-				}
-
-				err = notifications.Notify(ut.user, n, s)
-				if err != nil {
-					log.Errorf("[Undone Overdue Tasks Reminder] Could not notify user %d: %s", ut.user.ID, err)
-					return
-				}
-			}
-
-			if dispatchSingle {
-				for _, t := range tasks {
-					if err = events.DispatchOnCommit(s, &TaskOverdueEvent{
-						Task:    t,
-						User:    ut.user,
-						Project: projects[t.ProjectID],
-					}); err != nil {
-						log.Errorf("[Undone Overdue Tasks Reminder] Could not stage overdue event for task %d: %s", t.ID, err)
-						_ = s.Rollback()
-						return
-					}
-				}
-			}
-
-			if dispatchBatch {
-				if err = events.DispatchOnCommit(s, &TasksOverdueEvent{
-					Tasks:    tasks,
-					User:     ut.user,
-					Projects: projects,
-				}); err != nil {
-					log.Errorf("[Undone Overdue Tasks Reminder] Could not stage batch overdue event for user %d: %s", ut.user.ID, err)
-					_ = s.Rollback()
-					return
-				}
-			}
-
-			log.Debugf("[Undone Overdue Tasks Reminder] Sent reminder for %d tasks to user %d", len(tasks), ut.user.ID)
 		}
 
 		if err := s.Commit(); err != nil {
@@ -295,6 +200,114 @@ func RegisterOverdueReminderCron() {
 	if err != nil {
 		log.Fatalf("Could not register undone overdue tasks reminder cron: %s", err)
 	}
+}
+
+// sendOverdueReminders is the transaction body used by the cron owner.
+// The caller owns commit, rollback, queue publication and cleanup.
+func sendOverdueReminders(s *xorm.Session, now time.Time, emailEnabled, webhookEnabled bool) error {
+	var dispatchSingle, dispatchBatch bool
+	if webhookEnabled {
+		var err error
+		dispatchSingle, dispatchBatch, err = overdueEventsWithListeners(s)
+		if err != nil {
+			log.Errorf("[Undone Overdue Tasks Reminder] Could not check for overdue event listeners: %s", err)
+			return err
+		}
+	}
+
+	if !emailEnabled && !dispatchSingle && !dispatchBatch {
+		return nil
+	}
+
+	var cond builder.Cond
+	if !dispatchSingle && !dispatchBatch {
+		cond = builder.Eq{"users.overdue_tasks_reminders_enabled": true}
+	}
+
+	uts, err := getUndoneOverdueTasks(s, now, cond)
+	if err != nil {
+		log.Errorf("[Undone Overdue Tasks Reminder] Could not get undone overdue tasks in the next minute: %s", err)
+		return err
+	}
+
+	if len(uts) == 0 {
+		return nil
+	}
+
+	log.Debugf("[Undone Overdue Tasks Reminder] Sending reminders to %d users", len(uts))
+
+	taskIDs := []int64{}
+	for _, ut := range uts {
+		for _, t := range ut.allTasks() {
+			taskIDs = append(taskIDs, t.ID)
+		}
+	}
+
+	projects, err := GetProjectsMapSimpleByTaskIDs(s, taskIDs)
+	if err != nil {
+		log.Errorf("[Undone Overdue Tasks Reminder] Could not get projects for tasks: %s", err)
+		return err
+	}
+
+	for _, ut := range uts {
+		tasks := ut.allTasks()
+
+		if emailEnabled && ut.user.OverdueTasksRemindersEnabled {
+			var n notifications.Notification = &UndoneTasksOverdueNotification{
+				User:     ut.user,
+				Assigned: ut.assigned,
+				Followed: ut.followed,
+				Projects: projects,
+			}
+
+			if len(tasks) == 1 {
+				n = &UndoneTaskOverdueNotification{
+					User:    ut.user,
+					Task:    tasks[0],
+					Project: projects[tasks[0].ProjectID],
+				}
+			}
+
+			// Overdue notifications are mail-only (ToDB returns nil). Queue the
+			// side effect with this transaction so a later snapshot failure or
+			// commit failure discards it together with the pending source events.
+			events.OnCommit(s, func() error {
+				if err := notifications.Notify(ut.user, n); err != nil {
+					return errors.New("overdue_notification_failed")
+				}
+				return nil
+			})
+		}
+
+		if dispatchSingle {
+			for _, t := range tasks {
+				if err = events.DispatchOnCommit(s, &TaskOverdueEvent{
+					Task:    t,
+					User:    ut.user,
+					Project: projects[t.ProjectID],
+				}); err != nil {
+					log.Errorf("[Undone Overdue Tasks Reminder] Could not stage overdue event for task %d: %s", t.ID, err)
+					_ = s.Rollback()
+					return err
+				}
+			}
+		}
+
+		if dispatchBatch {
+			if err = events.DispatchOnCommit(s, &TasksOverdueEvent{
+				Tasks:    tasks,
+				User:     ut.user,
+				Projects: projects,
+			}); err != nil {
+				log.Errorf("[Undone Overdue Tasks Reminder] Could not stage batch overdue event for user %d: %s", ut.user.ID, err)
+				_ = s.Rollback()
+				return err
+			}
+		}
+
+		log.Debugf("[Undone Overdue Tasks Reminder] Sent reminder for %d tasks to user %d", len(tasks), ut.user.ID)
+	}
+	return nil
 }
 
 func mapToSlice(m map[int64]*Task) []*Task {
