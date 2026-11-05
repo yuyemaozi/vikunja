@@ -150,7 +150,22 @@ func TestDeliveryExpiredOwnerCannotFinalize(t *testing.T) {
 	require.NoError(t, s.Commit())
 	_ = s.Close()
 
-	assert.Equal(t, WebhookDeliveryStatusDelivered, loadDelivery(t, record.DeliveryID).Status)
+	stored := loadDelivery(t, record.DeliveryID)
+	assert.Equal(t, WebhookDeliveryStatusDelivered, stored.Status)
+	// A delayed success or failure from A must not overwrite B's committed result.
+	for _, kind := range []string{OutcomeDelivered, OutcomeFailed, OutcomeRetry} {
+		staleSession := db.NewSession()
+		stale, staleErr := CompleteWebhookDelivery(staleSession, record.DeliveryID, leaseA, later, DeliveryOutcome{Kind: kind})
+		require.NoError(t, staleErr)
+		assert.False(t, stale)
+		require.NoError(t, staleSession.Commit())
+		require.NoError(t, staleSession.Close())
+		after := loadDelivery(t, record.DeliveryID)
+		assert.Equal(t, stored.Status, after.Status)
+		assert.Equal(t, stored.AttemptCount, after.AttemptCount)
+		assert.Equal(t, stored.RetryGeneration, after.RetryGeneration)
+		assert.Equal(t, stored.DeliveredAt, after.DeliveredAt)
+	}
 }
 
 func TestDeliveryCASConcurrentNormalAndRecover(t *testing.T) {
