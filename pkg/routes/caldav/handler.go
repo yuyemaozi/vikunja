@@ -196,9 +196,10 @@ func TaskHandler(c *echo.Context) error {
 	}
 
 	storage := &VikunjaCaldavProjectStorage{
-		project: project,
-		task:    &models.Task{UID: taskUID},
-		user:    u,
+		project:        project,
+		task:           &models.Task{UID: taskUID},
+		user:           u,
+		requestContext: c.Request().Context(),
 	}
 
 	response := caldav.HandleRequestWithConfig(c.Request(), caldavConfig(storage, principalPathForUser(u.Username)))
@@ -230,8 +231,9 @@ func PrincipalHandler(c *echo.Context) error {
 	}
 
 	storage := &VikunjaCaldavProjectStorage{
-		user:        u,
-		isPrincipal: true,
+		user:           u,
+		isPrincipal:    true,
+		requestContext: c.Request().Context(),
 	}
 
 	// Try to parse a task from the request payload
@@ -264,8 +266,9 @@ func EntryHandler(c *echo.Context) error {
 	}
 
 	storage := &VikunjaCaldavProjectStorage{
-		user:    u,
-		isEntry: true,
+		user:           u,
+		isEntry:        true,
+		requestContext: c.Request().Context(),
 	}
 
 	// Try to parse a task from the request payload

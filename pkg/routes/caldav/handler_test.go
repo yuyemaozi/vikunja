@@ -17,6 +17,7 @@
 package caldav
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,10 @@ import (
 	"sync"
 	"testing"
 
+	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/db"
+	"code.vikunja.io/api/pkg/events"
+	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/user"
 
 	"github.com/labstack/echo/v5"
@@ -155,4 +159,37 @@ func TestTaskHandlerCurrentUserPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, body, principalHref(caldavFilterUser.Username))
 	assert.NotContains(t, body, principalHref(caldavOtherUser.Username))
+}
+
+// Exercise TaskHandler itself: collection and task routes construct storage separately.
+func TestCalDAVTaskRequestMetaPersistsInOutbox(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+	previous := config.WebhooksEnabled.GetBool()
+	config.WebhooksEnabled.Set(true)
+	t.Cleanup(func() { config.WebhooksEnabled.Set(previous) })
+	require.NoError(t, models.RegisterWebhookOutbox())
+	s := db.NewSession()
+	defer s.Close()
+	hook := &models.Webhook{ProjectID: 1, CreatedByID: 1, TargetURL: "https://example.invalid/", Events: []string{"task.created"}}
+	_, err := s.Insert(hook)
+	require.NoError(t, err)
+	require.NoError(t, s.Commit())
+	const requestID = "018f8f4c-2e18-7b61-9a50-9c4f5de4e501"
+	const uid = "synthetic-caldav-request-meta"
+	content := "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Planner Test//EN\r\nBEGIN:VTODO\r\nUID:" + uid + "\r\nDTSTAMP:20261105T000000Z\r\nSUMMARY:Synthetic task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+	req := httptest.NewRequest(http.MethodPut, projectPath(1)+uid+".ics", strings.NewReader(content))
+	req.Header.Set("Content-Type", "text/calendar")
+	req = req.WithContext(events.WithRequestMeta(context.Background(), &events.RequestMeta{RequestID: requestID}))
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	c.Set("userBasicAuth", &user.User{ID: 1, Username: "user1"})
+	c.SetPathValues(echo.PathValues{{Name: "project", Value: "1"}, {Name: "task", Value: uid + ".ics"}})
+	require.NoError(t, TaskHandler(c))
+	require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusNoContent}, rec.Code, rec.Body.String())
+	records := []models.WebhookDeliveryRecord{}
+	read := db.NewSession()
+	defer read.Close()
+	require.NoError(t, read.Where("webhook_id = ?", hook.ID).Find(&records))
+	require.Len(t, records, 1)
+	assert.Equal(t, requestID, records[0].RequestID)
 }
